@@ -18,14 +18,59 @@ Aucun serveur : chaque poste discute directement avec les autres.
 
 ### Avec apt (recommandé)
 
+Pour Ubuntu 22.04 et plus récent, Debian 12 et plus récent, et leurs dérivées (Linux Mint, Pop!_OS…).
+Le dépôt est signé : apt refuse tout paquet qui n'a pas été publié par le projet.
+
+**1. Ajouter la clé de signature du dépôt**
+
 ```bash
 sudo curl -fsSLo /usr/share/keyrings/qchat-archive-keyring.gpg https://arthurderichard.github.io/qchat/qchat-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/qchat-archive-keyring.gpg] https://arthurderichard.github.io/qchat ./" | sudo tee /etc/apt/sources.list.d/qchat.list
-sudo apt update && sudo apt install qchat
 ```
 
-Les mises à jour arrivent ensuite avec `sudo apt upgrade`. Le `.deb` est aussi disponible dans les
-[Releases](https://github.com/arthurderichard/qchat/releases) (`sudo apt install ./qchat_X.Y.Z_all.deb`).
+Facultatif, pour vérifier la clé — l'empreinte affichée doit être
+`58FB 7C5A 3A56 A870 274E  FF6B 26DE DB67 9AE3 DF57` :
+
+```bash
+gpg --show-keys /usr/share/keyrings/qchat-archive-keyring.gpg
+```
+
+**2. Ajouter le dépôt QChat aux sources d'apt**
+
+```bash
+echo "deb [signed-by=/usr/share/keyrings/qchat-archive-keyring.gpg] https://arthurderichard.github.io/qchat ./" | sudo tee /etc/apt/sources.list.d/qchat.list
+```
+
+**3. Installer**
+
+```bash
+sudo apt update
+sudo apt install qchat
+```
+
+QChat apparaît dans le menu des applications et se lance automatiquement en arrière-plan à
+l'ouverture de session suivante. Pour le démarrer tout de suite : `qchat`.
+
+**Mises à jour** : elles arrivent avec les mises à jour habituelles du système
+(`sudo apt update && sudo apt upgrade`, ou le gestionnaire de mises à jour).
+
+**Désinstallation** :
+
+```bash
+sudo apt remove qchat
+sudo rm /etc/apt/sources.list.d/qchat.list /usr/share/keyrings/qchat-archive-keyring.gpg
+```
+
+Vos conversations restent dans `~/.local/share/qchat` ; supprimez ce dossier pour tout effacer.
+
+**Sans ajouter le dépôt** : téléchargez `qchat_X.Y.Z_all.deb` depuis les
+[Releases](https://github.com/arthurderichard/qchat/releases) puis
+`sudo apt install ./qchat_X.Y.Z_all.deb` (pas de mises à jour automatiques dans ce cas).
+
+**En cas de problème**
+- `NO_PUBKEY` ou « n'est pas signé » : refaites l'étape 1 (clé absente ou incomplète).
+- Deux entrées QChat dans le menu : une ancienne installation par `install.sh` est présente,
+  retirez-la avec `./install.sh --uninstall` (ou `sudo ./install.sh --system --uninstall`).
+- Les collègues ne vous voient pas : vérifiez le pare-feu (voir [Réseau](#réseau)).
 
 ### Depuis les sources
 
@@ -50,7 +95,7 @@ Sans installation : `python3 -m qchat` depuis ce dossier.
 | 45455/tcp | messages (chiffrés)                          |
 | 45454/udp | annonces de présence (diffusion + unicast)   |
 
-`sudo ./install.sh --system` ouvre ces ports si `ufw` est actif ; sinon :
+Si le pare-feu `ufw` est actif (`sudo ufw status`), ouvrez ces ports (`sudo ./install.sh --system` le fait automatiquement) :
 `sudo ufw allow 45455/tcp && sudo ufw allow 45454/udp`.
 
 ## Utilisation
