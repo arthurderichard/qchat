@@ -96,6 +96,23 @@ Description: messagerie chiffrée de bout en bout pour réseau local
 EOF
 echo "/etc/xdg/autostart/$APP_ID.desktop" > "$ROOT/DEBIAN/conffiles"
 
+# Caches d'icônes et du menu : Ubuntu les met à jour par déclencheurs dpkg, on le fait aussi
+# explicitement pour que la nouvelle icône apparaisse à chaque installation et mise à jour.
+for script in postinst postrm; do
+    cat > "$ROOT/DEBIAN/$script" <<'EOF'
+#!/bin/sh
+set -e
+if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d /usr/share/icons/hicolor ]; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+exit 0
+EOF
+    chmod 755 "$ROOT/DEBIAN/$script"
+done
+
 mkdir -p "$SRC/dist"
 OUT="$SRC/dist/qchat_${VERSION}_all.deb"
 dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$OUT" >/dev/null

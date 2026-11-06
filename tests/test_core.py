@@ -4,14 +4,16 @@ Lancement : python3 -m unittest discover -s tests -v
 """
 
 import os
+import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
 
 from qchat import crypto
-from qchat import core
+from qchat import core, desktop
 from qchat.core import Connection, Core
 
 
@@ -91,6 +93,29 @@ class CryptoTest(unittest.TestCase):
         init["body"]["eph"] = crypto.PrivateKey.generate().public_key.encode().hex()
         with self.assertRaises(crypto.ProtocolError):
             hb.respond(init)
+
+
+class DesktopTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("gtk-update-icon-cache"), "gtk-update-icon-cache absent")
+    def test_stale_user_icon_cache_repaired(self):
+        with tempfile.TemporaryDirectory() as data:
+            base = os.path.join(data, "icons", "hicolor")
+            apps = os.path.join(base, "scalable", "apps")
+            os.makedirs(apps)
+            svg = os.path.join(apps, "qchat.svg")
+            with open(svg, "w") as f:
+                f.write("<svg xmlns='http://www.w3.org/2000/svg'/>")
+            subprocess.run(["gtk-update-icon-cache", "-q", "-t", "-f", base], check=True)
+            self.assertFalse(desktop.repair_user_icon_cache(data))     # icône présente : rien à faire
+            os.unlink(svg)                                             # suppression sans régénérer le cache
+            self.assertTrue(desktop.repair_user_icon_cache(data))
+            cache = os.path.join(base, "icon-theme.cache")
+            self.assertFalse(os.path.exists(cache) and b"qchat" in open(cache, "rb").read())
+            self.assertFalse(desktop.repair_user_icon_cache(data))     # déjà réparé
+
+    def test_no_user_icon_cache(self):
+        with tempfile.TemporaryDirectory() as data:
+            self.assertFalse(desktop.repair_user_icon_cache(data))
 
 
 class CoreTest(unittest.TestCase):

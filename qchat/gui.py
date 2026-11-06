@@ -17,6 +17,7 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 from . import netutil  # noqa: E402
 from .core import DEFAULT_PORT, Core, sniff_mime  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
+from .desktop import repair_user_icon_cache  # noqa: E402
 from .notify import Notifier  # noqa: E402
 
 log = logging.getLogger("qchat")
@@ -1282,6 +1283,8 @@ class QChatApp(Gtk.Application):
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
+        if repair_user_icon_cache():
+            Gtk.IconTheme.get_default().rescan_if_needed()
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,

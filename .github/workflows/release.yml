@@ -30,7 +30,7 @@ jobs:
           fi
 
       - name: Installer les dépendances
-        run: sudo apt-get update && sudo apt-get install -y python3-nacl dpkg-dev apt-utils
+        run: sudo apt-get update && sudo apt-get install -y python3-nacl dpkg-dev apt-utils gtk-update-icon-cache
 
       - name: Tests
         run: python3 -m unittest discover -s tests -v
