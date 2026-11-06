@@ -1,0 +1,65 @@
+# Publication d'une version : poussez un tag « vX.Y.Z » identique à qchat/__version__.
+#   1. tests  2. construction du .deb  3. Release GitHub avec le .deb
+#   4. mise à jour du dépôt apt signé sur la branche gh-pages (servie par GitHub Pages)
+# Secret requis : APT_GPG_PRIVATE_KEY (clé privée de signature, au format ASCII armor).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier que le tag correspond à la version
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' qchat/__init__.py)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à __version__ = $version"
+            exit 1
+          fi
+
+      - name: Installer les dépendances
+        run: sudo apt-get update && sudo apt-get install -y python3-nacl dpkg-dev apt-utils
+
+      - name: Tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Construire le paquet
+        run: packaging/build-deb.sh
+
+      - name: Créer la Release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "QChat $GITHUB_REF_NAME" --generate-notes
+
+      - name: Mettre à jour le dépôt apt (branche gh-pages)
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_REPO_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git clone --depth 1 --branch gh-pages "$remote" site
+          else
+            git init -b gh-pages site
+            git -C site remote add origin "$remote"
+          fi
+          packaging/build-apt-repo.sh site dist/*.deb
+          cd site
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Dépôt apt : QChat $GITHUB_REF_NAME"
+          git push origin gh-pages

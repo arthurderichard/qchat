@@ -16,6 +16,19 @@ Aucun serveur : chaque poste discute directement avec les autres.
 
 ## Installation
 
+### Avec apt (recommandé)
+
+```bash
+sudo curl -fsSLo /usr/share/keyrings/qchat-archive-keyring.gpg https://arthurderichard.github.io/qchat/qchat-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/qchat-archive-keyring.gpg] https://arthurderichard.github.io/qchat ./" | sudo tee /etc/apt/sources.list.d/qchat.list
+sudo apt update && sudo apt install qchat
+```
+
+Les mises à jour arrivent ensuite avec `sudo apt upgrade`. Le `.deb` est aussi disponible dans les
+[Releases](https://github.com/arthurderichard/qchat/releases) (`sudo apt install ./qchat_X.Y.Z_all.deb`).
+
+### Depuis les sources
+
 Dépendances (Ubuntu/Debian) : `sudo apt install python3-gi gir1.2-gtk-3.0 python3-nacl`
 
 ```bash
@@ -108,3 +121,17 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/netutil.py` | interfaces réseau locales, validation des IP                |
 | `qchat/notify.py`  | notifications D-Bus                                         |
 | `qchat/gui.py`     | interface GTK 3                                             |
+
+## Publier une version
+
+1. Mettre à jour `__version__` dans `qchat/__init__.py` et committer.
+2. `git tag v1.2.3 && git push origin main v1.2.3`
+
+GitHub Actions ([release.yml](.github/workflows/release.yml)) lance les tests, construit le `.deb`
+(`packaging/build-deb.sh`), crée la Release GitHub et met à jour le dépôt apt signé sur la branche
+`gh-pages` (`packaging/build-apt-repo.sh`), servi par GitHub Pages. Le secret `APT_GPG_PRIVATE_KEY`
+contient la clé privée de signature du dépôt.
+
+## Licence
+
+[MIT](LICENSE)
