@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QChat — dépôt apt</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}
+pre{background:#f3f3f3;padding:.8rem;overflow-x:auto;border-radius:6px}
+@media(prefers-color-scheme:dark){body{background:#1e1e1e;color:#ddd}pre{background:#2b2b2b}a{color:#8ab4f8}}</style>
+</head><body>
+<h1>QChat</h1>
+<p>Messagerie chiffrée de bout en bout pour réseau local. Dernière version : <strong>1.0.0</strong>.</p>
+<h2>Installation (Ubuntu, Debian et dérivées)</h2>
+<pre>sudo curl -fsSLo /usr/share/keyrings/qchat-archive-keyring.gpg https://arthurderichard.github.io/qchat/qchat-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/qchat-archive-keyring.gpg] https://arthurderichard.github.io/qchat ./" | sudo tee /etc/apt/sources.list.d/qchat.list
+sudo apt update &amp;&amp; sudo apt install qchat</pre>
+<p>Les mises à jour arrivent ensuite avec <code>sudo apt upgrade</code>.</p>
+<p>Empreinte de la clé de signature : <code>58FB7C5A3A56A870274EFF6B26DEDB679AE3DF57</code></p>
+<p><a href="https://github.com/arthurderichard/qchat">Code source</a></p>
+</body></html>

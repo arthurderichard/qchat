@@ -1,0 +1,18 @@
+Codename: stable
+Date: Fri, 06 Nov 2026 14:01:34 +0000
+Description: Dépôt apt de QChat
+Label: QChat
+Origin: QChat
+Suite: stable
+MD5Sum:
+ c7402376bdcec9145a6d15a6b64c543e              947 Packages
+ 64a3b8610a09b392fcb554a18844176d              628 Packages.gz
+SHA1:
+ 3db1359195e58e803cdf91b6dfb353e983820ec9              947 Packages
+ a9f29d2ab160dca3b71f5f60b4cc049c6147c367              628 Packages.gz
+SHA256:
+ 52c6efed646d43670a568e97dfc9c0bcc450988cbac4d792c369c18198bc12a0              947 Packages
+ 7d06cf805d579bc6a32890d934f89b1acca8e4973bf392f22e4ec8c46245a5d7              628 Packages.gz
+SHA512:
+ d9781c6096585789410f2a29175bacad876c521fd4d484b3cd81d56b8dab68ce3a59ad062da084599145af0ee59ca635c0278268d484da10d2b888d0e3469489              947 Packages
+ 09bd28e5c1be1a910db6556e6aae3f6b88d23127d5b47c9f60199db44d584312618d8e4c3e1c80870e87d23eeffbb5925df2bb9f9d78999221094861d54e3c81              628 Packages.gz
