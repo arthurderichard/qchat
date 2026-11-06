@@ -15,7 +15,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import netutil  # noqa: E402
-from .core import DEFAULT_PORT, Core  # noqa: E402
+from .core import DEFAULT_PORT, Core, sniff_mime  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .notify import Notifier  # noqa: E402
 
@@ -472,7 +472,10 @@ class MainWindow(Gtk.ApplicationWindow):
             return _label(m.text)
         exists = os.path.isfile(att.path)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        thumb = self._thumbnail(att.path) if att.is_image and exists else None
+        # Les pièces jointes reçues avant la détection par contenu peuvent être des images sans extension.
+        is_image = att.is_image or (att.mime == "application/octet-stream"
+                                    and (sniff_mime(att.path) or "").startswith("image/"))
+        thumb = self._thumbnail(att.path) if is_image and exists else None
         if thumb:
             ev = Gtk.EventBox(tooltip_text=f"{att.name} — cliquer pour ouvrir")
             ev.add(Gtk.Image.new_from_pixbuf(thumb))

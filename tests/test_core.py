@@ -238,6 +238,36 @@ class CoreTest(unittest.TestCase):
             att = node.core.store.get_attachment(node.core.store.messages(f"g:{gid}")[-1].id)
             self.assertTrue(att.path.startswith(node.core.files_dir + os.sep))
 
+    def test_image_without_extension_detected(self):
+        cid = self.add(self.a, self.b)
+        png = b"\x89PNG\r\n\x1a\n" + os.urandom(500)
+        name = "Image générée 1_ class=_ImageTransparencyBackdrop_"
+        msg = self.a.core.send_file(f"c:{cid}", self._file(name, png))
+        self.assertEqual(msg.text, name + ".png")
+        self.assertEqual(self.a.core.store.get_attachment(msg.id).mime, "image/png")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self._received_files(self.b, self.b.contact(self.a).conv)))
+        self.assertEqual(self._received_files(self.b, self.b.contact(self.a).conv),
+                         [(name + ".png", "image/png", png)])
+        # contenu inconnu : reste un fichier générique, nom inchangé
+        self.assertEqual(core.detect_file(self._file("notes", b"bonjour"), "notes"),
+                         ("notes", "application/octet-stream"))
+
+    def test_long_filename_keeps_extension(self):
+        cid = self.add(self.a, self.b)
+        long_name = ("Image générée 1_ class=_ImageTransparencyBackdrop-jTfEPD block h-full "
+                     "image-transparency-backdrop w-auto object-contain_.png")
+        emoji_name = "😀" * 100 + ".tar.gz"
+        png = b"\x89PNG\r\n\x1a\n" + os.urandom(300)
+        self.a.core.send_file(f"c:{cid}", self._file("a.png", png), name=long_name)
+        self.a.core.send_file(f"c:{cid}", self._file("b.tgz", b"archive"), name=emoji_name)
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and len(self._received_files(self.b, self.b.contact(self.a).conv)) == 2))
+        (n1, m1, d1), (n2, m2, _) = self._received_files(self.b, self.b.contact(self.a).conv)
+        self.assertEqual((n1, m1, d1), (long_name, "image/png", png))   # nom intact
+        self.assertTrue(n2.endswith(".tar.gz") and n2.startswith("😀"))
+        self.assertLessEqual(len(n2.encode()), core.MAX_FILENAME_BYTES)
+
     def test_corrupted_file_rejected(self):
         cid = self.add(self.a, self.b)
         msg = self.a.core.send_file(f"c:{cid}", self._file("a.txt", b"contenu original"))

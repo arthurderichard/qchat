@@ -67,12 +67,71 @@ def _clean_ips(ips):
     return [ip for ip in (netutil.parse_ip(x) if isinstance(x, str) else None for x in ips[:16]) if ip]
 
 
+MAX_FILENAME_BYTES = 200     # Linux limite un nom à 255 octets ; marge pour les doublons éventuels
+_SUFFIX = re.compile(r"(\.[A-Za-z0-9]{1,10}){1,2}$")
+
+
+def _truncate_bytes(text, limit):
+    return text.encode()[:max(limit, 0)].decode(errors="ignore")
+
+
 def safe_filename(name):
-    """Nom de fichier sans chemin ni caractère dangereux."""
+    """Nom de fichier sans chemin ni caractère dangereux, raccourci si besoin
+    en conservant l'extension (« .png », « .tar.gz »...)."""
     name = os.path.basename(str(name).replace("\\", "/"))
     name = "".join(ch for ch in name if ch.isprintable() and ch not in '/\0')
-    name = name.strip().lstrip(".")[:120]
+    name = name.strip().lstrip(".")
+    if len(name.encode()) > MAX_FILENAME_BYTES:
+        match = _SUFFIX.search(name)
+        suffix = match.group(0) if match and match.start() > 0 else ""
+        stem = name[:len(name) - len(suffix)]
+        name = _truncate_bytes(stem, MAX_FILENAME_BYTES - len(suffix.encode())).rstrip() + suffix
     return name or "fichier"
+
+
+# Signatures (premiers octets) des formats courants, pour les fichiers sans extension
+# (ex. image glissée depuis un navigateur).
+_MAGIC = (
+    (0, b"\x89PNG\r\n\x1a\n", "image/png"),
+    (0, b"\xff\xd8\xff", "image/jpeg"),
+    (0, b"GIF87a", "image/gif"),
+    (0, b"GIF89a", "image/gif"),
+    (8, b"WEBP", "image/webp"),
+    (0, b"BM", "image/bmp"),
+    (0, b"II*\x00", "image/tiff"),
+    (0, b"MM\x00*", "image/tiff"),
+    (4, b"ftypavif", "image/avif"),
+    (4, b"ftypheic", "image/heic"),
+    (4, b"ftypmif1", "image/heic"),
+    (0, b"%PDF-", "application/pdf"),
+)
+_EXTENSIONS = {"image/jpeg": ".jpg", "image/avif": ".avif", "image/heic": ".heic"}
+
+
+def sniff_mime(path):
+    """Type MIME déduit du contenu du fichier, ou None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+    for offset, magic, mime in _MAGIC:
+        if head[offset:offset + len(magic)] == magic:
+            return mime
+    return None
+
+
+def detect_file(path, name):
+    """Renvoie (nom, type MIME). Si l'extension ne dit rien, le type est déduit du contenu
+    et l'extension correspondante est ajoutée au nom."""
+    mime = mimetypes.guess_type(name)[0]
+    if mime:
+        return name, mime
+    mime = sniff_mime(path)
+    if not mime:
+        return name, "application/octet-stream"
+    ext = _EXTENSIONS.get(mime) or mimetypes.guess_extension(mime) or ""
+    return safe_filename(name + ext), mime
 
 
 _MSG_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -393,7 +452,7 @@ class Core:
             raise ValueError(f"« {os.path.basename(path)} » dépasse la taille maximale "
                              f"({MAX_FILE // (1024 * 1024)} Mo).")
         msg_id = uuid.uuid4().hex
-        name = safe_filename(name or os.path.basename(path))
+        name, mime = detect_file(path, safe_filename(name or os.path.basename(path)))
         dest_dir = os.path.join(self.files_dir, msg_id)
         os.makedirs(dest_dir, mode=0o700)
         dest = os.path.join(dest_dir, name)
@@ -402,7 +461,6 @@ class Core:
             while chunk := src.read(FILE_CHUNK):
                 digest.update(chunk)
                 dst.write(chunk)
-        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
         ts = time.time()
         payload = {"t": "file", "id": msg_id, "ts": ts, "name": name, "size": size, "mime": mime,
                    "sha256": digest.hexdigest()}
@@ -763,7 +821,8 @@ class Core:
                 raise ProtocolError("empreinte du fichier incorrecte")
             if not accept:
                 return
-            name = safe_filename(name)
+            # Type redéduit localement : on ne se fie pas à celui annoncé par l'expéditeur.
+            name, mime = detect_file(tmp, safe_filename(name))
             dest_dir = os.path.join(self.files_dir, msg_id)
             os.makedirs(dest_dir, mode=0o700, exist_ok=True)
             dest = os.path.join(dest_dir, name)
@@ -773,7 +832,6 @@ class Core:
                 os.unlink(tmp)
         ts = meta.get("ts")
         ts = min(ts, time.time() + 60) if isinstance(ts, (int, float)) else time.time()
-        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
         msg = self.store.add_message(msg_id, conv, cid, name, ts, "received", kind="file", unread=True)
         if msg:
             self.store.add_attachment(msg_id, name, size, mime, dest)
