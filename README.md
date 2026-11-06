@@ -8,6 +8,8 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Groupes** : création, ajout de membres par n'importe quel membre, départ.
 - **Partage d'images et de fichiers** (jusqu'à 200 Mo) dans les conversations et les groupes,
   chiffré lui aussi de bout en bout.
+- **Interface moderne** aux couleurs de QChat, en **thème clair ou sombre** : suit par défaut le
+  réglage du bureau (et ses changements en direct), ou se force via ☰ › Thème.
 - **Réactions par emoji** sur les messages et les fichiers (👍 ❤️ 😂 🎉 ✅…).
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).

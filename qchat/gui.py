@@ -19,38 +19,11 @@ from .core import DEFAULT_PORT, Core, sniff_mime  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
 from .notify import Notifier  # noqa: E402
+from .theme import MODES, ThemeManager  # noqa: E402
 
 log = logging.getLogger("qchat")
 
 APP_ID = "fr.qchat.QChat"
-
-CSS = b"""
-.bubble { padding: 6px 10px; border-radius: 12px; }
-.bubble.in { background-color: alpha(@theme_fg_color, 0.08); }
-.bubble.out { background-color: @theme_selected_bg_color; color: @theme_selected_fg_color; }
-.meta { font-size: smaller; opacity: 0.7; }
-.sender { font-weight: bold; font-size: smaller; }
-.system { font-style: italic; opacity: 0.6; font-size: smaller; }
-.day { font-weight: bold; opacity: 0.5; font-size: smaller; }
-.badge { background-color: @theme_selected_bg_color; color: @theme_selected_fg_color;
-         border-radius: 10px; padding: 0 7px; font-size: smaller; font-weight: bold; }
-.online { color: #2ec27e; }
-.offline { color: alpha(@theme_fg_color, 0.25); }
-.warning { color: #e5a50a; }
-.section { font-weight: bold; font-size: smaller; opacity: 0.55; padding: 10px 10px 3px 10px; }
-.subtitle { font-size: smaller; opacity: 0.7; }
-.chat-title { font-weight: bold; font-size: larger; }
-.mono { font-family: monospace; }
-.file-name { font-weight: bold; }
-.reaction { padding: 0 6px; min-height: 0; border-radius: 10px; }
-.reaction.mine { background-image: none; background-color: alpha(@theme_selected_bg_color, 0.35);
-                 border-color: @theme_selected_bg_color; }
-.react-btn { padding: 2px; min-height: 0; min-width: 0; }
-.emoji-pick { font-size: 150%; padding: 2px 4px; min-height: 0; min-width: 0; }
-.drop-hint { background-color: alpha(@theme_bg_color, 0.92); border: 2px dashed @theme_selected_bg_color;
-             border-radius: 12px; padding: 24px 36px; font-size: larger; font-weight: bold; }
-.file-btn { padding: 2px; min-height: 0; min-width: 0; }
-"""
 
 
 def _label(text="", css=None, xalign=0.0, wrap=False, selectable=False, markup=False):
@@ -75,6 +48,41 @@ def _day_label(ts):
     if day == time.localtime(time.time() - 86400)[:3]:
         return "Hier"
     return time.strftime("%d/%m/%Y", time.localtime(ts))
+
+
+def _short_time(ts):
+    day = time.localtime(ts)[:3]
+    if day == time.localtime()[:3]:
+        return time.strftime("%H:%M", time.localtime(ts))
+    if day == time.localtime(time.time() - 86400)[:3]:
+        return "Hier"
+    return time.strftime("%d/%m", time.localtime(ts))
+
+
+def _initials(name):
+    words = [w for w in name.replace("-", " ").split() if w[0].isalnum()]
+    if not words:
+        return "?"
+    letters = words[0][0] + (words[1][0] if len(words) > 1 else "")
+    return letters.upper()
+
+
+def _avatar(name, small=False, online=False, peer=False):
+    """Pastille ronde à initiales, avec un point vert de présence."""
+    lbl = _label(_initials(name), "avatar", xalign=0.5)
+    ctx = lbl.get_style_context()
+    if small:
+        ctx.add_class("small")
+    if peer:
+        ctx.add_class("peer")
+    lbl.set_valign(Gtk.Align.CENTER)
+    overlay = Gtk.Overlay(valign=Gtk.Align.CENTER)
+    overlay.add(lbl)
+    if online:
+        dot = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.END)
+        dot.get_style_context().add_class("presence")
+        overlay.add_overlay(dot)
+    return overlay
 
 
 def _human_size(n):
@@ -124,35 +132,36 @@ def _scrolled(child, height):
 # Barre latérale
 # ==========================================================================
 class ConvRow(Gtk.ListBoxRow):
-    def __init__(self, section, key, name, subtitle, online=None, unread=0, warn=False):
+    """Ligne façon messagerie : avatar, nom, heure, aperçu du dernier message, non-lus."""
+
+    def __init__(self, section, key, name, subtitle, when="", online=False, unread=0, warn=False):
         super().__init__()
         self.section, self.key = section, key
-        box = Gtk.Box(spacing=8, margin=6, margin_start=10)
-        dot = _label("●" if online is not None else "#", xalign=0.5)
-        if warn:
-            dot.set_text("⚠")
-            dot.get_style_context().add_class("warning")
-        elif online is not None:
-            dot.get_style_context().add_class("online" if online else "offline")
-        box.pack_start(dot, False, False, 0)
-        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box = Gtk.Box(spacing=10, margin=7, margin_start=8, margin_end=10)
+        box.pack_start(_avatar(name, online=online, peer=section == "peer"), False, False, 0)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
+        top = Gtk.Box(spacing=6)
         title = _label(name)
         title.set_ellipsize(Pango.EllipsizeMode.END)
-        if unread:
-            title.set_markup(f"<b>{GLib.markup_escape_text(name)}</b>")
-        sub = _label(subtitle, "subtitle")
+        title.set_markup(f"<b>{GLib.markup_escape_text(name)}</b>")
+        top.pack_start(title, True, True, 0)
+        if when:
+            top.pack_end(_label(when, "time"), False, False, 0)
+        bottom = Gtk.Box(spacing=6)
+        sub = _label(subtitle, "subtitle warning" if warn else "subtitle")
         sub.set_ellipsize(Pango.EllipsizeMode.END)
-        texts.pack_start(title, False, False, 0)
-        texts.pack_start(sub, False, False, 0)
-        box.pack_start(texts, True, True, 0)
+        bottom.pack_start(sub, True, True, 0)
         if unread:
-            box.pack_end(_label(str(unread), "badge", xalign=0.5), False, False, 0)
+            bottom.pack_end(_label(str(unread), "badge", xalign=0.5), False, False, 0)
+        texts.pack_start(top, False, False, 0)
+        texts.pack_start(bottom, False, False, 0)
+        box.pack_start(texts, True, True, 0)
         self.add(box)
 
 
 QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "✅", "👀", "🔥", "👏", "🤔"]
 
-SECTIONS = {"group": "GROUPES", "contact": "CONTACTS", "peer": "SUR LE RÉSEAU (non ajoutés)"}
+SECTIONS = {"group": "Groupes", "contact": "Contacts", "peer": "Sur le réseau (non ajoutés)"}
 
 
 # ==========================================================================
@@ -177,7 +186,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # -- construction -------------------------------------------------------
     def _build(self):
-        hb = Gtk.HeaderBar(show_close_button=True, title="QChat")
+        self.get_style_context().add_class("qchat")
+        hb = Gtk.HeaderBar(show_close_button=True)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        self.title_label = _label("", xalign=0.5)
+        self.subtitle_label = _label("", "subtitle", xalign=0.5)
+        titles.pack_start(self.title_label, False, False, 0)
+        titles.pack_start(self.subtitle_label, False, False, 0)
+        hb.set_custom_title(titles)
         self.header = hb
         self.set_titlebar(hb)
 
@@ -195,12 +211,16 @@ class MainWindow(Gtk.ApplicationWindow):
 
         main_menu = Gio.Menu()
         main_menu.append("Mon identité…", "app.identity")
+        theme_menu = Gio.Menu()
+        for mode, label in MODES.items():
+            theme_menu.append(label, f"app.theme::{mode}")
+        main_menu.append_submenu("Thème", theme_menu)
         main_menu.append("Quitter", "app.quit")
         menu_btn = Gtk.MenuButton(menu_model=main_menu)
         menu_btn.add(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
         hb.pack_end(menu_btn)
 
-        paned = Gtk.Paned(position=290)
+        paned = Gtk.Paned(position=310)
         self.add(paned)
 
         # Barre latérale
@@ -208,25 +228,32 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sidebar.set_header_func(self._sidebar_header)
         self.sidebar.connect("row-activated", self._on_row_activated)
         side_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        side_scroll.get_style_context().add_class("sidebar")
         side_scroll.add(self.sidebar)
         paned.pack1(side_scroll, resize=False, shrink=False)
 
         # Zone de discussion
         self.stack = Gtk.Stack()
         empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, spacing=10)
-        img = Gtk.Image.new_from_icon_name("user-available-symbolic", Gtk.IconSize.DIALOG)
-        img.set_pixel_size(64)
-        img.set_opacity(0.4)
-        empty.pack_start(img, False, False, 0)
-        empty.pack_start(_label("Sélectionnez une conversation", "chat-title", xalign=0.5), False, False, 0)
+        empty.get_style_context().add_class("empty-page")
+        logo = Gtk.Image.new_from_icon_name("qchat", Gtk.IconSize.DIALOG)
+        logo.set_pixel_size(96)
+        empty.pack_start(logo, False, False, 0)
+        empty.pack_start(_label("Sélectionnez une conversation", "empty-title", xalign=0.5), False, False, 0)
         empty.pack_start(_label("Cliquez sur 🔍 pour découvrir les collègues du réseau,\n"
                                 "ou ajoutez-en un par son adresse IP avec le bouton +.",
                                 "subtitle", xalign=0.5), False, False, 0)
-        self.stack.add_named(empty, "empty")
+        empty_page = Gtk.EventBox()
+        empty_page.get_style_context().add_class("empty-page")
+        empty_page.add(empty)
+        self.stack.add_named(empty_page, "empty")
 
         chat = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        top = Gtk.Box(spacing=8, margin=8, margin_start=14)
-        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        top = Gtk.Box(spacing=10, margin=0)
+        top.get_style_context().add_class("chat-top")
+        self.chat_avatar = Gtk.Box(margin_start=14, margin_top=8, margin_bottom=8)
+        top.pack_start(self.chat_avatar, False, False, 0)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
         self.chat_title = _label("", "chat-title")
         self.chat_sub = _label("", "subtitle")
         self.chat_sub.set_ellipsize(Pango.EllipsizeMode.END)
@@ -235,10 +262,12 @@ class MainWindow(Gtk.ApplicationWindow):
         top.pack_start(titles, True, True, 0)
         info_btn = Gtk.Button.new_from_icon_name("view-more-symbolic", Gtk.IconSize.BUTTON)
         info_btn.set_tooltip_text("Détails")
+        info_btn.set_valign(Gtk.Align.CENTER)
+        info_btn.set_margin_end(10)
+        info_btn.get_style_context().add_class("round")
         info_btn.connect("clicked", lambda _b: self.show_details())
         top.pack_end(info_btn, False, False, 0)
         chat.pack_start(top, False, False, 0)
-        chat.pack_start(Gtk.Separator(), False, False, 0)
 
         self.infobar = Gtk.InfoBar(message_type=Gtk.MessageType.WARNING, no_show_all=True)
         self.infobar_label = _label("", wrap=True)
@@ -249,40 +278,57 @@ class MainWindow(Gtk.ApplicationWindow):
         chat.pack_start(self.infobar, False, False, 0)
 
         self.msg_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.msg_list.set_margin_top(6)
+        self.msg_list.set_margin_bottom(6)
         self.msg_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.msg_scroll.get_style_context().add_class("chat-area")
         self.msg_scroll.add(self.msg_list)
         vadj = self.msg_scroll.get_vadjustment()
         vadj.connect("changed", self._on_adj_changed)
         vadj.connect("value-changed", self._on_adj_value)
         chat.pack_start(self.msg_scroll, True, True, 0)
-        chat.pack_start(Gtk.Separator(), False, False, 0)
 
-        bottom = Gtk.Box(spacing=6, margin=8)
-        self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
-        self.input.set_left_margin(6)
-        self.input.set_right_margin(6)
-        self.input.set_top_margin(6)
-        self.input.set_bottom_margin(6)
-        self.input.connect("key-press-event", self._on_input_key)
-        in_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        in_scroll.set_shadow_type(Gtk.ShadowType.IN)
-        in_scroll.set_propagate_natural_height(True)
-        in_scroll.set_max_content_height(140)
-        in_scroll.add(self.input)
+        # Barre de saisie flottante : 📎 | texte | envoyer
+        area = Gtk.Box()
+        area.get_style_context().add_class("composer-area")
+        composer = Gtk.Box(spacing=2)
+        composer.get_style_context().add_class("composer")
         attach = Gtk.Button.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON)
         attach.set_tooltip_text("Joindre des fichiers ou des images\n"
                                 "(ou glisser-déposer, ou Ctrl+V pour coller une capture d'écran)")
         attach.set_valign(Gtk.Align.END)
+        attach.get_style_context().add_class("round")
         attach.connect("clicked", lambda _b: self._pick_files())
-        bottom.pack_start(attach, False, False, 0)
-        bottom.pack_start(in_scroll, True, True, 0)
+        composer.pack_start(attach, False, False, 0)
+        self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
+        self.input.set_left_margin(4)
+        self.input.set_right_margin(4)
+        self.input.set_top_margin(8)
+        self.input.set_bottom_margin(8)
+        self.input.connect("key-press-event", self._on_input_key)
+        in_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        in_scroll.set_propagate_natural_height(True)
+        in_scroll.set_max_content_height(140)
+        in_scroll.add(self.input)
+        placeholder = _label("Écrire un message…", "placeholder")
+        placeholder.set_margin_start(5)
+        placeholder.set_halign(Gtk.Align.START)
+        placeholder.set_valign(Gtk.Align.CENTER)
+        in_overlay = Gtk.Overlay()
+        in_overlay.add(in_scroll)
+        in_overlay.add_overlay(placeholder)
+        in_overlay.set_overlay_pass_through(placeholder, True)
+        buf = self.input.get_buffer()
+        buf.connect("changed", lambda b: placeholder.set_visible(b.get_char_count() == 0))
+        composer.pack_start(in_overlay, True, True, 0)
         send = Gtk.Button.new_from_icon_name("document-send-symbolic", Gtk.IconSize.BUTTON)
         send.set_tooltip_text("Envoyer (Entrée) — Maj+Entrée pour un retour à la ligne")
-        send.get_style_context().add_class("suggested-action")
+        send.get_style_context().add_class("send-btn")
         send.set_valign(Gtk.Align.END)
         send.connect("clicked", lambda _b: self._send())
-        bottom.pack_start(send, False, False, 0)
-        chat.pack_start(bottom, False, False, 0)
+        composer.pack_start(send, False, False, 0)
+        area.pack_start(composer, True, True, 0)
+        chat.pack_start(area, False, False, 0)
         self.stack.add_named(chat, "chat")
         # Glisser-déposer de fichiers n'importe où dans la fenêtre, avec un bandeau pendant le survol.
         overlay = Gtk.Overlay()
@@ -317,37 +363,55 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             row.set_header(None)
 
-    def _contact_subtitle(self, c):
+    def _preview(self, m):
+        """Aperçu d'un message pour la barre latérale."""
+        text = " ".join((f"📎 {m.text}" if m.kind == "file" else m.text).split())
+        if m.kind == "system":
+            return text
+        if m.outgoing:
+            return f"Vous : {text}"
+        if m.conv.startswith("g:"):
+            return f"{self._sender_name(m.sender_id).split()[0]} : {text}"
+        return text
+
+    def _contact_subtitle(self, c, last):
         if c.pending_vk:
             return "⚠ Clé de sécurité modifiée"
+        if last:
+            return self._preview(last)
         ips = ", ".join(self.core.store.ips(c.id)) or "aucune IP"
-        if not c.vk:
-            return f"Jamais joint — {ips}"
-        return ips
+        return f"Jamais joint — {ips}" if not c.vk else ips
 
     def refresh_sidebar(self):
         store = self.core.store
         for row in self.sidebar.get_children():
             self.sidebar.remove(row)
+        last = {}
+
+        def last_msg(conv):
+            if conv not in last:
+                last[conv] = store.last_message(conv)
+            return last[conv]
 
         def last_ts(conv):
-            m = store.last_message(conv)
+            m = last_msg(conv)
             return m.ts if m else 0
 
         total_unread = 0
-        groups = sorted(store.groups(), key=lambda g: -last_ts(g.conv))
-        for g in groups:
+        for g in sorted(store.groups(), key=lambda g: -last_ts(g.conv)):
             unread = store.unread_count(g.conv)
             total_unread += unread
+            m = last_msg(g.conv)
             n = len(store.group_member_ids(g.gid)) + 1
-            self.sidebar.add(ConvRow("group", g.conv, g.name, f"{n} membres", unread=unread))
-        contacts = sorted(store.contacts(), key=lambda c: (-last_ts(c.conv), c.name.lower()))
-        for c in contacts:
+            self.sidebar.add(ConvRow("group", g.conv, g.name, self._preview(m) if m else f"{n} membres",
+                                     when=_short_time(m.ts) if m else "", unread=unread))
+        for c in sorted(store.contacts(), key=lambda c: (-last_ts(c.conv), c.name.lower())):
             unread = store.unread_count(c.conv)
             total_unread += unread
-            self.sidebar.add(ConvRow("contact", c.conv, c.name, self._contact_subtitle(c),
-                                     online=self.core.is_online(c.id), unread=unread,
-                                     warn=bool(c.pending_vk)))
+            m = last_msg(c.conv)
+            self.sidebar.add(ConvRow("contact", c.conv, c.name, self._contact_subtitle(c, m),
+                                     when=_short_time(m.ts) if m else "", online=self.core.is_online(c.id),
+                                     unread=unread, warn=bool(c.pending_vk)))
         for vk, peer in sorted(self.core.discovered.items(), key=lambda kv: kv[1]["name"].lower()):
             self.sidebar.add(ConvRow("peer", vk, peer["name"], ", ".join(peer["ips"]), online=True))
         self.sidebar.show_all()
@@ -355,10 +419,11 @@ class MainWindow(Gtk.ApplicationWindow):
         for row in self.sidebar.get_children():
             if row.key == self.current:
                 self.sidebar.select_row(row)
-        title = f"QChat ({total_unread})" if total_unread else "QChat"
-        self.header.set_title(title)
-        self.header.set_subtitle(self.core.name)
-        self.set_title(title)
+        accent = self.app.theme.palette["accent"]
+        count = f" ({total_unread})" if total_unread else ""
+        self.title_label.set_markup(f"<b><span foreground='{accent}'>Q</span>Chat{count}</b>")
+        self.subtitle_label.set_text(self.core.name)
+        self.set_title(f"QChat{count}")
         self._refresh_chat_header()
 
     def _on_row_activated(self, _lb, row):
@@ -412,18 +477,31 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         kind, ident = self.current.split(":", 1)
         self.infobar.hide()
+        for child in self.chat_avatar.get_children():
+            self.chat_avatar.remove(child)
+        esc = GLib.markup_escape_text
         if kind == "g":
             g = self.core.store.get_group(ident)
             names = [self.core.store.get_contact(i).name for i in self.core.store.group_member_ids(ident)]
+            self.chat_avatar.add(_avatar(g.name, small=True))
+            self.chat_avatar.show_all()
             self.chat_title.set_text(g.name)
-            self.chat_sub.set_text("Vous, " + ", ".join(sorted(names, key=str.lower)))
+            self.chat_sub.set_text(f"{len(names) + 1} membres · Vous, "
+                                   + ", ".join(sorted(names, key=str.lower)))
         else:
             c = self.core.store.get_contact(int(ident))
+            online = self.core.is_online(c.id)
+            self.chat_avatar.add(_avatar(c.name, small=True, online=online))
+            self.chat_avatar.show_all()
             self.chat_title.set_text(c.name)
-            state = "en ligne" if self.core.is_online(c.id) else "hors ligne"
+            ips = esc(", ".join(self.core.store.ips(c.id)))
             if not c.vk:
                 state = "jamais joint — les messages partiront dès qu'il sera joignable"
-            self.chat_sub.set_text(f"{state} · {', '.join(self.core.store.ips(c.id))}")
+            elif online:
+                state = f"<span foreground='{self.app.theme.palette['accent']}'>en ligne</span>"
+            else:
+                state = "hors ligne"
+            self.chat_sub.set_markup(f"{state} · {ips}")
             if c.pending_vk:
                 self.infobar_label.set_text(
                     f"Une clé de sécurité différente a répondu à l'adresse {c.pending_ip} de {c.name}. "
@@ -440,9 +518,12 @@ class MainWindow(Gtk.ApplicationWindow):
         day = _day_label(m.ts)
         if day != self._last_day:
             self._last_day = day
-            self._add_row(_label(day, "day", xalign=0.5), Gtk.Align.FILL)
+            self._add_row(_label(day, "day", xalign=0.5), Gtk.Align.CENTER)
         if m.kind == "system":
-            self._add_row(_label(m.text, "system", xalign=0.5, wrap=True), Gtk.Align.FILL)
+            note = _label(m.text, "system", xalign=0.5, wrap=True)
+            note.set_max_width_chars(70)
+            note.set_justify(Gtk.Justification.CENTER)
+            self._add_row(note, Gtk.Align.CENTER)
             return
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         ctx = bubble.get_style_context()
@@ -1285,10 +1366,7 @@ class QChatApp(Gtk.Application):
         Gtk.Application.do_startup(self)
         if repair_user_icon_cache():
             Gtk.IconTheme.get_default().rescan_if_needed()
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS)
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
-                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.theme = None
         self.core = Core(home=self._home, port=self._port, discovery=self._discovery,
                          on_event=lambda name, data: GLib.idle_add(self._on_event, name, data))
         try:
@@ -1302,6 +1380,11 @@ class QChatApp(Gtk.Application):
             dlg.destroy()
             self.core = None
             return
+        self.theme = ThemeManager(self.core.store.get_setting("theme", "system"), self._on_theme_changed)
+        theme_action = Gio.SimpleAction.new_stateful("theme", GLib.VariantType.new("s"),
+                                                     GLib.Variant("s", self.theme.mode))
+        theme_action.connect("change-state", self._on_theme_action)
+        self.add_action(theme_action)
         self.notifier = Notifier(self._on_notification_clicked)
         for name, cb, accel in (
                 ("quit", lambda *_a: self.quit(), "<Primary>q"),
@@ -1358,6 +1441,15 @@ class QChatApp(Gtk.Application):
         self.core.set_name(entry.get_text().strip() or default or "Anonyme")
         dlg.destroy()
         self.win.refresh_sidebar()
+
+    def _on_theme_action(self, action, value):
+        action.set_state(value)
+        self.core.store.set_setting("theme", value.get_string())
+        self.theme.set_mode(value.get_string())
+
+    def _on_theme_changed(self):
+        if self.win:
+            self.win.refresh_sidebar()     # couleurs insérées dans le texte (« en ligne », logo)
 
     def _on_notification_clicked(self, conv):
         win = self._ensure_window()
