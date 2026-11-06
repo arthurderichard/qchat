@@ -2,27 +2,31 @@
 Hash: SHA512
 
 Codename: stable
-Date: Fri, 06 Nov 2026 14:01:34 +0000
+Date: Fri, 06 Nov 2026 14:29:56 +0000
 Description: Dépôt apt de QChat
 Label: QChat
 Origin: QChat
 Suite: stable
 MD5Sum:
- c7402376bdcec9145a6d15a6b64c543e              947 Packages
- 64a3b8610a09b392fcb554a18844176d              628 Packages.gz
+ 434d8810961f18d2bd08bd2c98a59602             1894 Packages
+ 8ea43dee98f51e1e9291842bb15201d4              757 Packages.gz
+ 0b151cf807bb9da8ff2ddfe7cde811c3              924 Release
 SHA1:
- 3db1359195e58e803cdf91b6dfb353e983820ec9              947 Packages
- a9f29d2ab160dca3b71f5f60b4cc049c6147c367              628 Packages.gz
+ a20e65b6b80c67185381d3e0c70e7d534b074515             1894 Packages
+ d3b75d34ff04db510d76b88042a94ec8091d9e0e              757 Packages.gz
+ e0aa280a5c7ced1b6a4191e031bd50ff658ee6a6              924 Release
 SHA256:
- 52c6efed646d43670a568e97dfc9c0bcc450988cbac4d792c369c18198bc12a0              947 Packages
- 7d06cf805d579bc6a32890d934f89b1acca8e4973bf392f22e4ec8c46245a5d7              628 Packages.gz
+ c9391b14a6c5acfc48730b011329d7263a3fcd22ff98faa83d938af4e73c8ca8             1894 Packages
+ e0ad61c05d3e62ecf0c237020ec86da5d935bd9f3d5c1e3bbb3658fe74a89b02              757 Packages.gz
+ 4d8af7170e8240a5c07f9d4332cbc7a93b7b4d7783745fca60217fdea58cf602              924 Release
 SHA512:
- d9781c6096585789410f2a29175bacad876c521fd4d484b3cd81d56b8dab68ce3a59ad062da084599145af0ee59ca635c0278268d484da10d2b888d0e3469489              947 Packages
- 09bd28e5c1be1a910db6556e6aae3f6b88d23127d5b47c9f60199db44d584312618d8e4c3e1c80870e87d23eeffbb5925df2bb9f9d78999221094861d54e3c81              628 Packages.gz
+ 18a33a56845049f890c155a58df2b0e0713ff60088543e839c6c8c241521ca75e839590acaafdbcef4bc88e989aff269794b57e0f6ba48a4de3f1c1580e9ebf3             1894 Packages
+ 291c6c49d521c73af75d12724c91107c48ad69509f034d57f1d62579ec151eb1ce97b16553ee9b4c61ab21aea608e083543daccec47c9806157514cddb2b5f02              757 Packages.gz
+ 562e5832e7a8509585fe9ded3599a80ae18ef47572af7c0ee5c1fee8bc3c85227d906e29e3f4e05db63f15adb0b876658395ca891c59c4f85e3da06cbc3bd0f0              924 Release
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQRY+3xaOlaocCdO/2sm3ttnmuPfVwUCau3dvgAKCRAm3ttnmuPf
-V8WEAPwKYwRx7lahvyRxOizkUNxnPxqHEKSrci2IjcX9VnP24AD9EB5nuZopFWiW
-Fo9iBlRoNu3pZoXtfvNvxcA2tShJMAY=
-=ZjVU
+iHUEARYKAB0WIQRY+3xaOlaocCdO/2sm3ttnmuPfVwUCau3kZAAKCRAm3ttnmuPf
+V0bDAQCp3jSfUKteFkZyHQVa2tYOLCwuHd6Lv58eT1apoJvBCQD9GdqRl7aNUvau
+yRHZUYS4A5dJUxlYai7Eq1Srez9bugw=
+=Y5rB
 -----END PGP SIGNATURE-----
