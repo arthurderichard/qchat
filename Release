@@ -1,22 +1,22 @@
 Codename: stable
-Date: Fri, 06 Nov 2026 14:29:56 +0000
+Date: Fri, 06 Nov 2026 14:38:56 +0000
 Description: Dépôt apt de QChat
 Label: QChat
 Origin: QChat
 Suite: stable
 MD5Sum:
- 434d8810961f18d2bd08bd2c98a59602             1894 Packages
- 8ea43dee98f51e1e9291842bb15201d4              757 Packages.gz
- 0b151cf807bb9da8ff2ddfe7cde811c3              924 Release
+ c5104113e92e71581c119a3b9afe1158             2841 Packages
+ 6b91cdce2aacf951f1874308ac0a3224              876 Packages.gz
+ 0d76e06942d7cf1cb2644c146330c19c             1296 Release
 SHA1:
- a20e65b6b80c67185381d3e0c70e7d534b074515             1894 Packages
- d3b75d34ff04db510d76b88042a94ec8091d9e0e              757 Packages.gz
- e0aa280a5c7ced1b6a4191e031bd50ff658ee6a6              924 Release
+ b59b97247d2fdd00be558064a241d7fa95f97bcc             2841 Packages
+ 85511718b3d274fb9f796d518fe299e10f823ec1              876 Packages.gz
+ 99dc9500f8c5a0d919d6decddb38a3a30b4010c7             1296 Release
 SHA256:
- c9391b14a6c5acfc48730b011329d7263a3fcd22ff98faa83d938af4e73c8ca8             1894 Packages
- e0ad61c05d3e62ecf0c237020ec86da5d935bd9f3d5c1e3bbb3658fe74a89b02              757 Packages.gz
- 4d8af7170e8240a5c07f9d4332cbc7a93b7b4d7783745fca60217fdea58cf602              924 Release
+ 33f7b6d96be402049675b02b133897693d030e6b7d3d7f11c9fa3231eebbabd1             2841 Packages
+ f85f974f084cf5efb171f7e3f479fba2d765b4f99ea26128777ae60386000c75              876 Packages.gz
+ 8e90aac47cfc790e996caeb20e54ee3c785fb4df0fd6930f7197373aea0e0280             1296 Release
 SHA512:
- 18a33a56845049f890c155a58df2b0e0713ff60088543e839c6c8c241521ca75e839590acaafdbcef4bc88e989aff269794b57e0f6ba48a4de3f1c1580e9ebf3             1894 Packages
- 291c6c49d521c73af75d12724c91107c48ad69509f034d57f1d62579ec151eb1ce97b16553ee9b4c61ab21aea608e083543daccec47c9806157514cddb2b5f02              757 Packages.gz
- 562e5832e7a8509585fe9ded3599a80ae18ef47572af7c0ee5c1fee8bc3c85227d906e29e3f4e05db63f15adb0b876658395ca891c59c4f85e3da06cbc3bd0f0              924 Release
+ 9b7afa6912a7b06d65d495ee4e763df6f56a0e86060e93512292ec6f5bc83209b4d5aa02d14104e6191fdcfb165956c05a1ee164473cd1e555a2d3a6d33fc97c             2841 Packages
+ 339d349dbaf07519b43dac01047ecfb861a55d6ae0a5720b56dd11b92e0597855486e04eede21a3795af84720060dd72fd114a680cfa67895bc147b291eb3ae7              876 Packages.gz
+ 87e296daedae9237de986e4d40701d35f420cf01045159a85a43b39467c866a979436bbc4efd189ef08d9167a9c25589c003ad686b2c7b4bb3d71aa81aa1caf9             1296 Release
