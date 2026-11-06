@@ -8,6 +8,7 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Groupes** : création, ajout de membres par n'importe quel membre, départ.
 - **Partage d'images et de fichiers** (jusqu'à 200 Mo) dans les conversations et les groupes,
   chiffré lui aussi de bout en bout.
+- **Réactions par emoji** sur les messages et les fichiers (👍 ❤️ 😂 🎉 ✅…).
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
@@ -117,7 +118,11 @@ Si le pare-feu `ufw` est actif (`sudo ufw status`), ouvrez ces ports (`sudo ./in
 
 Entrée envoie, Maj+Entrée fait un retour à la ligne.
 
-**Images et fichiers** : bouton 📎, glisser-déposer dans la conversation, ou Ctrl+V (fichiers copiés
+**Réactions** : survolez un message et cliquez sur 😊 (ou clic droit sur le message), puis choisissez
+un emoji. Les réactions s'affichent sous le message ; cliquez sur une pastille pour ajouter ou retirer
+la vôtre, survolez-la pour voir qui a réagi. Vous êtes notifié quand quelqu'un réagit à vos messages.
+
+**Images et fichiers** : bouton 📎, glisser-déposer n'importe où dans la fenêtre, ou Ctrl+V (fichiers copiés
 dans le gestionnaire de fichiers, ou capture d'écran — un aperçu demande confirmation). Les images
 s'affichent en miniature (clic pour ouvrir) ; chaque pièce jointe propose *Ouvrir*, *Enregistrer
 sous…* et *Afficher dans le dossier*. Les fichiers reçus sont rangés dans

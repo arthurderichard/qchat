@@ -268,6 +268,43 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(n2.endswith(".tar.gz") and n2.startswith("😀"))
         self.assertLessEqual(len(n2.encode()), core.MAX_FILENAME_BYTES)
 
+    def _reactions(self, node, msg_id):
+        names = {c.vk: c.name for c in node.core.store.contacts()}
+        names[node.vk] = "moi"
+        return sorted((e, names.get(r, "?")) for e, r in node.core.store.reactions(msg_id))
+
+    def test_reactions_direct(self):
+        cid = self.add(self.a, self.b)
+        msg = self.a.core.send_text(f"c:{cid}", "On déjeune ?")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_message(msg.id) is not None))
+        self.b.core.react(msg.id, "👍")
+        self.b.core.react(msg.id, "🎉")
+        self.assertTrue(wait_for(lambda: self._reactions(self.a, msg.id) == [("🎉", "Bob"), ("👍", "Bob")]))
+        self.assertTrue(any(n == "reaction" and d.get("incoming") for n, d in self.a.events))
+        self.b.core.react(msg.id, "🎉")      # second clic : retire la réaction
+        self.assertTrue(wait_for(lambda: self._reactions(self.a, msg.id) == [("👍", "Bob")]))
+        self.assertEqual(self._reactions(self.b, msg.id), [("👍", "moi")])
+
+    def test_reactions_group_and_isolation(self):
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid, c_cid])
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_group(gid) for n in (self.b, self.c))))
+        msg = self.a.core.send_text(f"g:{gid}", "Réunion à 14 h")
+        self.assertTrue(wait_for(lambda: self.c.core.store.get_message(msg.id) is not None))
+        self.c.core.react(msg.id, "✅")
+        # Bob voit la réaction de Chloé, qu'il n'a jamais ajoutée lui-même
+        self.assertTrue(wait_for(lambda: self._reactions(self.b, msg.id) == [("✅", "Chloé")]))
+        self.assertTrue(wait_for(lambda: self._reactions(self.a, msg.id) == [("✅", "Chloé")]))
+        # Une réaction en direct ne peut pas viser un message d'un groupe
+        a_cid_on_c = self.c.contact(self.a).id
+        self.c.core.store.enqueue(a_cid_on_c, {"t": "react", "id": "r1", "ref": msg.id,
+                                               "emoji": "💩", "on": True})
+        self.c.core.request_flush([a_cid_on_c])
+        time.sleep(1)
+        self.assertEqual(self._reactions(self.a, msg.id), [("✅", "Chloé")])
+
     def test_corrupted_file_rejected(self):
         cid = self.add(self.a, self.b)
         msg = self.a.core.send_file(f"c:{cid}", self._file("a.txt", b"contenu original"))

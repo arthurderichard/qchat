@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS attachments (
     mime TEXT NOT NULL,
     path TEXT NOT NULL              -- copie locale du fichier
 );
+CREATE TABLE IF NOT EXISTS reactions (
+    msg_id TEXT NOT NULL,
+    reactor TEXT NOT NULL,          -- clé publique de la personne (la mienne incluse)
+    emoji TEXT NOT NULL,
+    ts REAL NOT NULL,
+    PRIMARY KEY (msg_id, reactor, emoji)
+);
 CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -188,9 +195,13 @@ class Store:
     def clear_pending_key(self, cid):
         self._x("UPDATE contacts SET pending_vk=NULL, pending_ip=NULL WHERE id=?", (cid,))
 
+    def _delete_conv_messages(self, conv):
+        self._x("DELETE FROM reactions WHERE msg_id IN (SELECT id FROM messages WHERE conv=?)", (conv,))
+        self._x("DELETE FROM messages WHERE conv=?", (conv,))
+
     def delete_contact(self, cid):
         with self._lock:
-            self._x("DELETE FROM messages WHERE conv=?", (f"c:{cid}",))
+            self._delete_conv_messages(f"c:{cid}")
             self._x("DELETE FROM contacts WHERE id=?", (cid,))
 
     def merge_contacts(self, src, dst):
@@ -260,7 +271,7 @@ class Store:
 
     def delete_group(self, gid):
         with self._lock:
-            self._x("DELETE FROM messages WHERE conv=?", (f"g:{gid}",))
+            self._delete_conv_messages(f"g:{gid}")
             self._x("DELETE FROM groups WHERE gid=?", (gid,))
 
     # -- messages -----------------------------------------------------------
@@ -295,6 +306,25 @@ class Store:
 
     def mark_read(self, conv):
         self._x("UPDATE messages SET unread=0 WHERE conv=? AND unread=1", (conv,))
+
+    # -- réactions ---------------------------------------------------------------
+    def set_reaction(self, msg_id, reactor, emoji, on):
+        """Ajoute ou retire une réaction ; renvoie True si l'état a changé."""
+        if on:
+            cur = self._x("INSERT OR IGNORE INTO reactions VALUES (?, ?, ?, ?)",
+                          (msg_id, reactor, emoji, time.time()))
+        else:
+            cur = self._x("DELETE FROM reactions WHERE msg_id=? AND reactor=? AND emoji=?",
+                          (msg_id, reactor, emoji))
+        return cur.rowcount > 0
+
+    def has_reaction(self, msg_id, reactor, emoji):
+        return bool(self._q("SELECT 1 FROM reactions WHERE msg_id=? AND reactor=? AND emoji=?",
+                            (msg_id, reactor, emoji)))
+
+    def reactions(self, msg_id):
+        """Liste de (emoji, clé de la personne), dans l'ordre d'arrivée."""
+        return self._q("SELECT emoji, reactor FROM reactions WHERE msg_id=? ORDER BY ts", (msg_id,))
 
     # -- pièces jointes ---------------------------------------------------------
     def add_attachment(self, msg_id, name, size, mime, path):

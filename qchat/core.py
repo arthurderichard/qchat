@@ -121,6 +121,12 @@ def sniff_mime(path):
     return None
 
 
+def valid_emoji(emoji):
+    """Une réaction est un emoji court : pas de texte, d'espace ni de caractère de contrôle."""
+    return (isinstance(emoji, str) and 0 < len(emoji) <= 16
+            and all(ord(ch) >= 0x2000 and ch.isprintable() or ch in "\u200d\ufe0f" for ch in emoji))
+
+
 def detect_file(path, name):
     """Renvoie (nom, type MIME). Si l'extension ne dit rien, le type est déduit du contenu
     et l'extension correspondante est ajoutée au nom."""
@@ -474,6 +480,21 @@ class Core:
         self.request_flush(targets)
         return msg
 
+    def react(self, msg_id, emoji):
+        """Ajoute ma réaction ``emoji`` à un message, ou la retire si elle y est déjà."""
+        m = self.store.get_message(msg_id)
+        if not m or m.kind == "system" or not valid_emoji(emoji):
+            return
+        me = self.identity.vk_hex
+        on = not self.store.has_reaction(msg_id, me, emoji)
+        self.store.set_reaction(msg_id, me, emoji, on)
+        payload = {"t": "react", "id": uuid.uuid4().hex, "ref": msg_id, "emoji": emoji, "on": on}
+        targets = self._targets(m.conv, payload)
+        for cid in targets:
+            self.store.enqueue(cid, payload)
+        self._emit("reaction", msg_id=msg_id, emoji=emoji, on=on, incoming=False)
+        self.request_flush(targets)
+
     def _delete_files(self, conv):
         for path in self.store.attachment_paths(conv):
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
@@ -770,6 +791,8 @@ class Core:
             self._on_group(cid, obj)
         elif t == "leave":
             self._on_leave(cid, obj)
+        elif t == "react":
+            self._on_react(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")
@@ -872,6 +895,25 @@ class Core:
             self._system(f"g:{gid}", f"{sender.name} a ajouté {', '.join(new_names)}.")
         self._emit("contacts_changed")
         self._emit("groups_changed")
+
+    def _on_react(self, cid, obj):
+        ref, emoji, on = obj.get("ref"), obj.get("emoji"), obj.get("on")
+        if not (isinstance(ref, str) and _MSG_ID.fullmatch(ref) and valid_emoji(emoji)
+                and isinstance(on, bool)):
+            return
+        gid = obj.get("gid")
+        if gid is not None:
+            if not isinstance(gid, str) or cid not in self.store.group_member_ids(gid):
+                return
+            conv = f"g:{gid}"
+        else:
+            conv = f"c:{cid}"
+        m = self.store.get_message(ref)
+        if m and (m.conv != conv or m.kind == "system"):
+            return      # on ne réagit qu'aux messages de la conversation où l'on se trouve
+        # Message pas encore reçu (groupe : réaction arrivée avant lui) : on garde la réaction.
+        if self.store.set_reaction(ref, self.store.get_contact(cid).vk, emoji, on):
+            self._emit("reaction", msg_id=ref, contact_id=cid, emoji=emoji, on=on, incoming=True)
 
     def _on_leave(self, cid, obj):
         gid = obj.get("gid")

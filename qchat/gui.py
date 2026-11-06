@@ -41,6 +41,13 @@ CSS = b"""
 .chat-title { font-weight: bold; font-size: larger; }
 .mono { font-family: monospace; }
 .file-name { font-weight: bold; }
+.reaction { padding: 0 6px; min-height: 0; border-radius: 10px; }
+.reaction.mine { background-image: none; background-color: alpha(@theme_selected_bg_color, 0.35);
+                 border-color: @theme_selected_bg_color; }
+.react-btn { padding: 2px; min-height: 0; min-width: 0; }
+.emoji-pick { font-size: 150%; padding: 2px 4px; min-height: 0; min-width: 0; }
+.drop-hint { background-color: alpha(@theme_bg_color, 0.92); border: 2px dashed @theme_selected_bg_color;
+             border-radius: 12px; padding: 24px 36px; font-size: larger; font-weight: bold; }
 .file-btn { padding: 2px; min-height: 0; min-width: 0; }
 """
 
@@ -142,6 +149,8 @@ class ConvRow(Gtk.ListBoxRow):
         self.add(box)
 
 
+QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "✅", "👀", "🔥", "👏", "🤔"]
+
 SECTIONS = {"group": "GROUPES", "contact": "CONTACTS", "peer": "SUR LE RÉSEAU (non ajoutés)"}
 
 
@@ -155,6 +164,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.core = app.core
         self.current = None          # conv affichée ('c:<id>' / 'g:<gid>')
         self._status_labels = {}     # msg_id -> label méta (conversation affichée)
+        self._reaction_boxes = {}    # msg_id -> boîte des réactions (conversation affichée)
         self._last_day = None
         self._stick_bottom = True
         self.set_default_size(980, 640)
@@ -273,11 +283,30 @@ class MainWindow(Gtk.ApplicationWindow):
         bottom.pack_start(send, False, False, 0)
         chat.pack_start(bottom, False, False, 0)
         self.stack.add_named(chat, "chat")
-        chat.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
-        chat.drag_dest_add_uri_targets()
-        chat.connect("drag-data-received", self._on_drop)
+        # Glisser-déposer de fichiers n'importe où dans la fenêtre, avec un bandeau pendant le survol.
+        overlay = Gtk.Overlay()
+        overlay.add(self.stack)
+        self.drop_hint = _label("", "drop-hint", xalign=0.5)
+        self.drop_hint.set_halign(Gtk.Align.CENTER)
+        self.drop_hint.set_valign(Gtk.Align.CENTER)
+        self.drop_hint.set_no_show_all(True)
+        overlay.add_overlay(self.drop_hint)
+        overlay.set_overlay_pass_through(self.drop_hint, True)
+        self.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        self.drag_dest_add_uri_targets()
+        self.connect("drag-data-received", self._on_drop)
+        # Zone de saisie : un fichier déposé est envoyé (au lieu d'insérer son chemin) ;
+        # le texte glissé reste inséré normalement.
+        targets = Gtk.TargetList.new([])
+        targets.add_uri_targets(1)
+        targets.add_text_targets(2)
+        self.input.drag_dest_set_target_list(targets)
+        self.input.connect("drag-data-received", self._on_input_drop)
+        for widget in (self, self.input):
+            widget.connect("drag-motion", self._on_drag_motion)
+            widget.connect("drag-leave", lambda *_a: self.drop_hint.hide())
 
-        paned.pack2(self.stack, resize=True, shrink=False)
+        paned.pack2(overlay, resize=True, shrink=False)
         self.show_all()
 
     # -- barre latérale -----------------------------------------------------
@@ -360,6 +389,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         self.current = conv
         self._status_labels.clear()
+        self._reaction_boxes.clear()
         self._last_day = None
         for row in self.msg_list.get_children():
             self.msg_list.remove(row)
@@ -431,7 +461,85 @@ class MainWindow(Gtk.ApplicationWindow):
         bubble.pack_start(meta, False, False, 0)
         if m.outgoing:
             self._status_labels[m.id] = (meta, m.ts)
-        self._add_row(bubble, Gtk.Align.END if m.outgoing else Gtk.Align.START)
+        self._add_row(self._with_reactions(m, bubble), Gtk.Align.END if m.outgoing else Gtk.Align.START)
+
+    # -- réactions -------------------------------------------------------------
+    def _with_reactions(self, m, bubble):
+        """Bulle + pastilles de réactions + bouton 😊 visible au survol (ou clic droit)."""
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        column.pack_start(bubble, False, False, 0)
+        reacts = Gtk.Box(spacing=4, halign=Gtk.Align.END if m.outgoing else Gtk.Align.START)
+        reacts.set_no_show_all(True)
+        column.pack_start(reacts, False, False, 0)
+        self._reaction_boxes[m.id] = reacts
+        self._fill_reactions(m.id, reacts)
+
+        btn = Gtk.Button.new_from_icon_name("face-smile-symbolic", Gtk.IconSize.BUTTON)
+        btn.set_relief(Gtk.ReliefStyle.NONE)
+        btn.set_valign(Gtk.Align.CENTER)
+        btn.set_tooltip_text("Réagir")
+        btn.get_style_context().add_class("react-btn")
+        btn.set_opacity(0)
+        btn.connect("clicked", lambda b: self._react_popover(b, m.id))
+        line = Gtk.Box(spacing=2)
+        for child in ((btn, column) if m.outgoing else (column, btn)):
+            line.pack_start(child, False, False, 0)
+
+        ev = Gtk.EventBox()
+        ev.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        ev.add(line)
+        ev.connect("enter-notify-event", lambda *_a: btn.set_opacity(1))
+        ev.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
+                   or btn.set_opacity(0))
+        ev.connect("button-press-event", lambda _w, e: e.button == 3 and self._react_popover(btn, m.id))
+        return ev
+
+    def _fill_reactions(self, msg_id, box):
+        for child in box.get_children():
+            box.remove(child)
+        me = self.core.identity.vk_hex
+        by_emoji = {}
+        for emoji, reactor in self.core.store.reactions(msg_id):
+            by_emoji.setdefault(emoji, []).append(reactor)
+        for emoji, reactors in by_emoji.items():
+            names = []
+            for r in reactors:
+                c = None if r == me else self.core.store.contact_by_vk(r)
+                names.append("Vous" if r == me else (c.name if c else "?"))
+            b = Gtk.Button(label=f"{emoji} {len(reactors)}" if len(reactors) > 1 else emoji)
+            ctx = b.get_style_context()
+            ctx.add_class("reaction")
+            if me in reactors:
+                ctx.add_class("mine")
+            b.set_tooltip_text(", ".join(names))
+            b.connect("clicked", lambda _b, e=emoji: self.core.react(msg_id, e))
+            box.pack_start(b, False, False, 0)
+            b.show()
+        box.set_visible(bool(by_emoji))
+
+    def _react_popover(self, anchor, msg_id):
+        pop = Gtk.Popover(relative_to=anchor)
+        grid = Gtk.Grid(margin=4)
+        for i, emoji in enumerate(QUICK_EMOJIS):
+            b = Gtk.Button(label=emoji, relief=Gtk.ReliefStyle.NONE)
+            b.get_style_context().add_class("emoji-pick")
+            b.connect("clicked", lambda _b, e=emoji: (self.core.react(msg_id, e), pop.popdown()))
+            grid.attach(b, i % 6, i // 6, 1, 1)
+        pop.add(grid)
+        grid.show_all()
+        pop.popup()
+        return True
+
+    def on_reaction(self, msg_id, contact_id=None, emoji=None, on=False, incoming=False):
+        box = self._reaction_boxes.get(msg_id)
+        if box:
+            self._fill_reactions(msg_id, box)
+        m = self.core.store.get_message(msg_id)
+        visible = m and self.current == m.conv and self.is_active() and self.get_visible()
+        if incoming and on and m and m.outgoing and not visible:
+            c = self.core.store.get_contact(contact_id)
+            self.app.notifier.notify(f"{c.name if c else '?'} a réagi {emoji}",
+                                     f"à votre message : {m.text}", m.conv)
 
     @staticmethod
     def _set_meta(label, ts, status):
@@ -599,9 +707,38 @@ class MainWindow(Gtk.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_drop(self, _w, _ctx, _x, _y, data, _info, _time):
+    def _on_drag_motion(self, *_a):
+        if not self.drop_hint.get_visible():
+            if self.current:
+                kind, ident = self.current.split(":", 1)
+                target = (self.core.store.get_group(ident) if kind == "g"
+                          else self.core.store.get_contact(int(ident)))
+                self.drop_hint.set_text(f"📎  Déposez ici pour envoyer à {target.name if target else '…'}")
+            else:
+                self.drop_hint.set_text("Ouvrez d'abord une conversation pour y déposer des fichiers")
+            self.drop_hint.show()
+        return False
+
+    def _drop_paths(self, data):
+        self.drop_hint.hide()
         paths = [Gio.File.new_for_uri(u).get_path() for u in data.get_uris() or []]
-        self._send_files([p for p in paths if p])
+        paths = [p for p in paths if p]
+        if paths and not self.current:
+            self._error("Aucune conversation ouverte",
+                        "Choisissez d'abord la personne ou le groupe à qui envoyer ces fichiers.")
+        else:
+            self._send_files(paths)
+
+    def _on_drop(self, _w, _ctx, _x, _y, data, _info, _time):
+        self._drop_paths(data)
+
+    def _on_input_drop(self, widget, ctx, _x, _y, data, info, time_):
+        if info == 1:     # fichiers : on les envoie au lieu d'insérer leur chemin dans la saisie
+            widget.stop_emission_by_name("drag-data-received")
+            Gtk.drag_finish(ctx, True, False, time_)
+            self._drop_paths(data)
+        else:
+            self.drop_hint.hide()
 
     def _paste(self):
         """Ctrl+V : fichiers copiés depuis le gestionnaire de fichiers, ou image (capture d'écran).
@@ -1233,6 +1370,8 @@ class QChatApp(Gtk.Application):
             win.on_message(data["message"], data.get("incoming", False))
         elif name == "status":
             win.on_status(data["msg_id"], data["status"])
+        elif name == "reaction":
+            win.on_reaction(**data)
         elif name == "key_changed":
             c = self.core.store.get_contact(data["contact_id"])
             if c:
