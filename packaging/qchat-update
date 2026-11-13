@@ -1,0 +1,40 @@
+#!/bin/sh
+# Mise à jour automatique de QChat (lancée en root par qchat-update.timer).
+# Ne consulte QUE le dépôt apt de QChat, signé, et ne met à jour QUE le paquet qchat
+# (avec ses éventuelles nouvelles dépendances). Une fois le paquet remplacé, chaque
+# instance de QChat ouverte le remarque et se relance d'elle-même.
+set -eu
+
+REPO="arthurderichard.github.io/qchat"
+export DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8
+
+[ "$(id -u)" = 0 ] || { echo "qchat-update : à lancer en root" >&2; exit 1; }
+dpkg-query -W -f='${Status}' qchat 2>/dev/null | grep -q "install ok installed" || exit 0
+
+# Sources apt qui pointent vers le dépôt QChat (qchat.list, qchat.sources ou autre nom).
+parts="$(mktemp -d)"
+trap 'rm -rf "$parts"' EXIT
+n=0
+for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [ -f "$f" ] && grep -qs "$REPO" "$f" || continue
+    ln -s "$f" "$parts/$(basename "$f")"
+    n=$((n + 1))
+done
+if [ "$n" = 0 ]; then
+    echo "qchat-update : dépôt QChat absent des sources apt, rien à faire."
+    exit 0
+fi
+
+APT_OPTS="-o Dir::Etc::SourceList=/dev/null -o Dir::Etc::SourceParts=$parts -o APT::Get::List-Cleanup=0 -o DPkg::Lock::Timeout=600"
+before="$(dpkg-query -W -f='${Version}' qchat)"
+# shellcheck disable=SC2086
+apt-get -q $APT_OPTS update
+# shellcheck disable=SC2086
+apt-get -q -y $APT_OPTS -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+    install --only-upgrade qchat
+after="$(dpkg-query -W -f='${Version}' qchat)"
+if [ "$before" != "$after" ]; then
+    echo "qchat-update : QChat mis à jour ($before → $after)."
+else
+    echo "qchat-update : QChat $after est à jour."
+fi

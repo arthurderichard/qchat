@@ -1,5 +1,6 @@
 """Interface GTK 3 de QChat."""
 
+import json
 import logging
 import os
 import pwd
@@ -16,7 +17,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import gifs, netutil  # noqa: E402
+from . import __version__, emojis, gifs, netutil, updater  # noqa: E402
 from .core import DEFAULT_PORT, MAX_AVATAR, Core, sniff_mime  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
@@ -101,6 +102,8 @@ def _avatar(name, small=False, online=False, peer=False, image=None, large=False
     return overlay
 
 
+UPDATE_POLL = int(os.environ.get("QCHAT_UPDATE_POLL", 60))   # s entre deux vérifications de version
+INTERACTIONS = [("wizz", "⚡  Wizz"), ("poke", "👉  Poke")]   # menu « Interactions » de l'en-tête
 WIZZ_COMMANDS = {"/wizz": "wizz", "/poke": "poke"}
 
 
@@ -211,6 +214,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self._reaction_boxes = {}    # msg_id -> boîte des réactions (conversation affichée)
         self._text_labels = {}       # msg_id -> (texte, méta) des bulles affichées
         self._editing = None         # msg_id du message en cours de modification
+        self._replying = None        # msg_id du message auquel on répond
+        self._rows = {}              # msg_id -> ligne de la liste (conversation affichée)
+        self._replies = {}           # msg_id -> ids des messages affichés qui le citent
+        self._sel_label = None       # dernier texte de bulle cliqué (pour Ctrl+C)
         self._viewer = None          # visionneuse de pièces jointes ouverte
         self._last_day = None
         self._stick_bottom = True
@@ -218,6 +225,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_icon_name("qchat")
         self._build()
         self.connect("delete-event", self._on_close)
+        self.connect("key-press-event", self._on_window_key)
         self.connect("notify::is-active", self._on_active_changed)
         self.refresh_sidebar()
 
@@ -252,10 +260,14 @@ class MainWindow(Gtk.ApplicationWindow):
         for mode, label in MODES.items():
             theme_menu.append(label, f"app.theme::{mode}")
         main_menu.append_submenu("Thème", theme_menu)
+        main_menu.append("Redémarrer QChat", "app.restart")
         main_menu.append("Quitter", "app.quit")
-        menu_btn = Gtk.MenuButton(menu_model=main_menu)
+        self.main_menu = main_menu
+        self.menu_btn = menu_btn = Gtk.MenuButton(menu_model=main_menu)
         menu_btn.add(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
         hb.pack_end(menu_btn)
+        if self.app._update_version:
+            self.set_update_ready(self.app._update_version)
 
         paned = Gtk.Paned(position=310)
         self.add(paned)
@@ -297,6 +309,24 @@ class MainWindow(Gtk.ApplicationWindow):
         titles.pack_start(self.chat_title, False, False, 0)
         titles.pack_start(self.chat_sub, False, False, 0)
         top.pack_start(titles, True, True, 0)
+        interactions = Gio.Menu()
+        for kind, label in INTERACTIONS:
+            interactions.append(label, f"win.interaction::{kind}")
+        action = Gio.SimpleAction.new("interaction", GLib.VariantType.new("s"))
+        action.connect("activate", lambda _a, v: self._send_wizz(v.get_string()))
+        self.add_action(action)
+        self.interactions_btn = Gtk.MenuButton(menu_model=interactions, valign=Gtk.Align.CENTER,
+                                               tooltip_text="Wizz, poke…")
+        ibox = Gtk.Box(spacing=4)
+        ibox.pack_start(Gtk.Label(label="⚡"), False, False, 0)
+        ibox.pack_start(Gtk.Label(label="Interactions"), False, False, 0)
+        ibox.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON),
+                        False, False, 0)
+        self.interactions_btn.add(ibox)
+        ibox.show_all()
+        self.interactions_btn.get_style_context().add_class("interactions-btn")
+        self.interactions_btn.set_no_show_all(True)
+        top.pack_start(self.interactions_btn, False, False, 0)
         info_btn = Gtk.Button.new_from_icon_name("view-more-symbolic", Gtk.IconSize.BUTTON)
         info_btn.set_tooltip_text("Détails")
         info_btn.set_valign(Gtk.Align.CENTER)
@@ -341,6 +371,22 @@ class MainWindow(Gtk.ApplicationWindow):
         edit_cancel.connect("clicked", lambda _b: self._cancel_edit())
         self.edit_bar.pack_start(edit_cancel, False, False, 0)
         area.pack_start(self.edit_bar, False, False, 0)
+        self.reply_bar = Gtk.Box(spacing=6, no_show_all=True)
+        self.reply_bar.get_style_context().add_class("edit-bar")
+        reply_texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        self.reply_title = _label("", "edit-title")
+        reply_texts.pack_start(self.reply_title, False, False, 0)
+        self.reply_orig = _label("", "subtitle")
+        self.reply_orig.set_ellipsize(Pango.EllipsizeMode.END)
+        reply_texts.pack_start(self.reply_orig, False, False, 0)
+        self.reply_bar.pack_start(reply_texts, True, True, 0)
+        reply_cancel = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON)
+        reply_cancel.set_tooltip_text("Annuler la réponse (Échap)")
+        reply_cancel.set_valign(Gtk.Align.CENTER)
+        reply_cancel.get_style_context().add_class("round")
+        reply_cancel.connect("clicked", lambda _b: self._cancel_reply())
+        self.reply_bar.pack_start(reply_cancel, False, False, 0)
+        area.pack_start(self.reply_bar, False, False, 0)
         composer = Gtk.Box(spacing=2)
         composer.get_style_context().add_class("composer")
         attach = Gtk.Button.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON)
@@ -357,6 +403,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.gif_popover = GifPopover(self)
         self.gif_btn.set_popover(self.gif_popover)
         composer.pack_start(self.gif_btn, False, False, 0)
+        self.emoji_btn = Gtk.MenuButton(tooltip_text="Insérer un emoji")
+        self.emoji_btn.add(Gtk.Image.new_from_icon_name("face-smile-symbolic", Gtk.IconSize.BUTTON))
+        self.emoji_btn.set_valign(Gtk.Align.END)
+        self.emoji_btn.get_style_context().add_class("round")
+        self.emoji_popover = EmojiPopover(self)
+        self.emoji_btn.set_popover(self.emoji_popover)
+        composer.pack_start(self.emoji_btn, False, False, 0)
         self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
         self.input.set_left_margin(4)
         self.input.set_right_margin(4)
@@ -424,6 +477,8 @@ class MainWindow(Gtk.ApplicationWindow):
     def _preview(self, m):
         """Aperçu d'un message pour la barre latérale."""
         text = " ".join((f"📎 {m.text}" if m.kind == "file" else m.text).split())
+        if m.deleted is not None:
+            text = "Message supprimé"
         if m.kind == "system":
             return text
         if m.outgoing:
@@ -517,7 +572,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self._status_labels.clear()
         self._reaction_boxes.clear()
         self._text_labels.clear()
+        self._rows.clear()
+        self._replies.clear()
+        self._sel_label = None
         self._cancel_edit()
+        self._cancel_reply()
         self._last_day = None
         for row in self.msg_list.get_children():
             self.msg_list.remove(row)
@@ -547,6 +606,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.chat_avatar.add(_avatar(g.name, small=True, image=self.core.avatar_path(g.conv)))
             self.chat_avatar.show_all()
             self.chat_title.set_text(g.name)
+            self.interactions_btn.hide()
             self.chat_sub.set_text(f"{len(names) + 1} membres · Vous, "
                                    + ", ".join(sorted(names, key=str.lower)))
         else:
@@ -556,6 +616,7 @@ class MainWindow(Gtk.ApplicationWindow):
                                          image=self.core.avatar_path(c.conv)))
             self.chat_avatar.show_all()
             self.chat_title.set_text(c.name)
+            self.interactions_btn.show()
             if not c.vk:
                 state = "jamais joint — les messages partiront dès qu'il sera joignable"
             elif online:
@@ -586,18 +647,33 @@ class MainWindow(Gtk.ApplicationWindow):
             note.set_justify(Gtk.Justification.CENTER)
             self._add_row(note, Gtk.Align.CENTER)
             return
+        self._rows[m.id] = self._add_row(*self._message_widget(m))
+
+    def _message_widget(self, m):
+        """Bulle complète d'un message (citation, contenu, heure, réactions) et son alignement."""
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         ctx = bubble.get_style_context()
         ctx.add_class("bubble")
         ctx.add_class("out" if m.outgoing else "in")
+        halign = Gtk.Align.END if m.outgoing else Gtk.Align.START
         if not m.outgoing and m.conv.startswith("g:"):
             bubble.pack_start(_label(self._sender_name(m.sender_id), "sender"), False, False, 0)
+        if m.deleted is not None:
+            ctx.add_class("deleted")
+            bubble.pack_start(_label("🚫  Message supprimé par son auteur", "deleted-text"), False, False, 0)
+            meta = _label(time.strftime("%H:%M", time.localtime(m.ts)), "meta", xalign=1.0)
+            bubble.pack_start(meta, False, False, 0)
+            return bubble, halign
+        if m.reply_to:
+            bubble.pack_start(self._quote_widget(m.reply_to, m.conv), False, False, 0)
+            self._replies.setdefault(m.reply_to, set()).add(m.id)
         if m.kind == "file":
             bubble.pack_start(self._attachment_widget(m), False, False, 0)
         else:
             text = _label(m.text, wrap=True, selectable=True)
             text.set_max_width_chars(60)
             text.set_can_focus(False)
+            text.connect("button-press-event", lambda w, _e: setattr(self, "_sel_label", w) and False)
             bubble.pack_start(text, False, False, 0)
         meta = _label("", "meta", xalign=1.0)
         meta.set_track_visited_links(False)
@@ -608,7 +684,62 @@ class MainWindow(Gtk.ApplicationWindow):
             self._status_labels[m.id] = meta
         if m.kind == "text":
             self._text_labels[m.id] = (text, meta)
-        self._add_row(self._with_reactions(m, bubble), Gtk.Align.END if m.outgoing else Gtk.Align.START)
+        return self._with_reactions(m, bubble), halign
+
+    def _rerender(self, msg_id):
+        """Reconstruit la bulle d'un message affiché (suppression, citation modifiée…)."""
+        row = self._rows.get(msg_id)
+        m = self.core.store.get_message(msg_id)
+        if row is None or m is None or row.get_parent() is None:
+            return
+        index = row.get_index()
+        for table in (self._status_labels, self._reaction_boxes, self._text_labels):
+            table.pop(msg_id, None)
+        row.destroy()
+        self._rows[msg_id] = self._add_row(*self._message_widget(m), position=index)
+
+    def _excerpt(self, m):
+        if m.deleted is not None:
+            return "Message supprimé"
+        if m.kind == "file":
+            att = self.core.store.get_attachment(m.id)
+            return "🖼 Image" if att and att.is_image else f"📎 {m.text}"
+        return " ".join(m.text.split())
+
+    def _quote_widget(self, ref_id, conv):
+        """Rappel du message auquel on répond ; un clic fait défiler jusqu'à lui."""
+        ref = self.core.store.get_message(ref_id)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        box.get_style_context().add_class("quote")
+        if ref is None or ref.conv != conv:
+            box.pack_start(_label("Message d'origine introuvable", "quote-text"), False, False, 0)
+            return box
+        who = "Vous" if ref.outgoing else self._sender_name(ref.sender_id)
+        box.pack_start(_label(who, "quote-name"), False, False, 0)
+        text = _label(self._excerpt(ref), "quote-text")
+        text.set_ellipsize(Pango.EllipsizeMode.END)
+        text.set_max_width_chars(50)
+        text.set_lines(2)
+        text.set_line_wrap(True)
+        box.pack_start(text, False, False, 0)
+        ev = Gtk.EventBox(tooltip_text="Afficher le message d'origine")
+        ev.add(box)
+        ev.connect("button-press-event", lambda _w, e: e.button == 1 and self._scroll_to(ref_id) or True)
+        ev.connect("realize", lambda w: w.get_window().set_cursor(
+            Gdk.Cursor.new_from_name(w.get_display(), "pointer")))
+        return ev
+
+    def _scroll_to(self, msg_id):
+        row = self._rows.get(msg_id)
+        if row is None or row.get_parent() is None:
+            return
+        self._stick_bottom = False
+        adj = self.msg_scroll.get_vadjustment()
+        alloc = row.get_allocation()
+        adj.set_value(max(0, alloc.y - (adj.get_page_size() - alloc.height) / 2))
+        child = row.get_child()
+        child.get_style_context().add_class("flash")
+        GLib.timeout_add(1600, lambda: child.get_style_context().remove_class("flash") or False)
 
     # -- réactions -------------------------------------------------------------
     def _with_reactions(self, m, bubble):
@@ -631,6 +762,14 @@ class MainWindow(Gtk.ApplicationWindow):
         tools = Gtk.Box(valign=Gtk.Align.CENTER)
         tools.pack_start(btn, False, False, 0)
         hover = [btn]
+        reply = Gtk.Button.new_from_icon_name("mail-reply-sender-symbolic", Gtk.IconSize.BUTTON)
+        reply.set_relief(Gtk.ReliefStyle.NONE)
+        reply.set_tooltip_text("Répondre")
+        reply.get_style_context().add_class("react-btn")
+        reply.set_opacity(0)
+        reply.connect("clicked", lambda _b: self._start_reply(m.id))
+        tools.pack_start(reply, False, False, 0)
+        hover.append(reply)
         if m.outgoing and m.kind == "text":
             edit = Gtk.Button.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.BUTTON)
             edit.set_relief(Gtk.ReliefStyle.NONE)
@@ -688,11 +827,21 @@ class MainWindow(Gtk.ApplicationWindow):
         content.pack_start(grid, False, False, 0)
         m = self.core.store.get_message(msg_id)
         actions = []
+        if m:
+            actions.append(("Répondre", self._start_reply))
+        if m and m.kind == "text":
+            actions.append(("Copier le texte", self._copy_text))
         if m and m.outgoing and m.kind == "text":
             actions.append(("Modifier", self._start_edit))
         if m and m.edited:
             actions.append(("Historique des modifications",
                             self._show_history))
+        att = self.core.store.get_attachment(msg_id) if m and m.kind == "file" else None
+        if att and os.path.isfile(att.path):
+            actions.append(("Enregistrer sous…", lambda _mid, a=att: self._save_file_as(a)))
+            actions.append(("Afficher dans le dossier", lambda _mid, a=att: self._show_in_folder(a.path)))
+        if m and m.outgoing:
+            actions.append(("Supprimer", self._confirm_delete))
         if actions:
             content.pack_start(Gtk.Separator(), False, False, 2)
         for text, fn in actions:
@@ -737,7 +886,7 @@ class MainWindow(Gtk.ApplicationWindow):
         label.set_markup(f"<a href='history' title='{GLib.markup_escape_text(tip)}'>modifié</a>  "
                          + GLib.markup_escape_text(txt))
 
-    def _add_row(self, widget, halign):
+    def _add_row(self, widget, halign, position=-1):
         widget.set_halign(halign)
         widget.set_margin_start(12)
         widget.set_margin_end(12)
@@ -746,7 +895,8 @@ class MainWindow(Gtk.ApplicationWindow):
         row = Gtk.ListBoxRow(activatable=False, selectable=False)
         row.add(widget)
         row.show_all()
-        self.msg_list.add(row)
+        self.msg_list.insert(row, position)
+        return row
 
     def _on_adj_changed(self, adj):
         if self._stick_bottom:
@@ -777,6 +927,8 @@ class MainWindow(Gtk.ApplicationWindow):
             ev.connect("realize", lambda w: w.get_window().set_cursor(
                 Gdk.Cursor.new_from_name(w.get_display(), "pointer")))
             box.pack_start(ev, False, False, 0)
+            # Image affichée : ni nom de fichier ni boutons (clic droit : enregistrer, dossier…).
+            return box
         row = Gtk.Box(spacing=8)
         if not thumb:
             icon = Gio.content_type_get_icon(Gio.content_type_from_mime_type(att.mime) or att.mime)
@@ -1018,6 +1170,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if event.keyval == Gdk.KEY_Escape and self._editing:
             self._cancel_edit()
             return True
+        if event.keyval == Gdk.KEY_Escape and self._replying:
+            self._cancel_reply()
+            return True
         buf = self.input.get_buffer()
         if (event.keyval == Gdk.KEY_Up and not self._editing and self.current
                 and buf.get_char_count() == 0):
@@ -1030,6 +1185,24 @@ class MainWindow(Gtk.ApplicationWindow):
             self._send()
             return True
         return False
+
+    def set_update_ready(self, version):
+        """Une version plus récente est installée : le menu propose de redémarrer pour l'appliquer."""
+        menu = self.main_menu
+        for i in range(menu.get_n_items()):
+            action = menu.get_item_attribute_value(i, "action", GLib.VariantType.new("s"))
+            if action is not None and action.get_string() == "app.restart":
+                menu.remove(i)
+                menu.insert(i, f"Redémarrer pour passer en {version}", "app.restart")
+                break
+        self.menu_btn.get_style_context().add_class("update-ready")
+        self.menu_btn.set_tooltip_text(f"QChat {version} est installé : redémarrez pour l'utiliser")
+
+    def has_draft(self):
+        """Un message est en cours de saisie ou de modification."""
+        buf = self.input.get_buffer()
+        return self._editing is not None or bool(
+            buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip())
 
     def _send(self):
         if not self.current:
@@ -1048,8 +1221,9 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         if text.strip():
             self._stick_bottom = True
-            self.core.send_text(self.current, text)
+            self.core.send_text(self.current, text, reply_to=self._replying)
             buf.set_text("")
+            self._cancel_reply()
 
     def _send_wizz(self, kind):
         wait = self.core.send_wizz(self.current, kind)
@@ -1063,10 +1237,80 @@ class MainWindow(Gtk.ApplicationWindow):
         shake_widget(self.msg_scroll)
 
     # -- modification des messages --------------------------------------------
+    # -- réponse à un message ----------------------------------------------------
+    def _start_reply(self, msg_id):
+        m = self.core.store.get_message(msg_id)
+        if not m or m.conv != self.current or m.kind == "system" or m.deleted is not None:
+            return
+        self._cancel_edit()
+        self._replying = msg_id
+        who = "vous-même" if m.outgoing else self._sender_name(m.sender_id)
+        self.reply_title.set_text(f"↩ Réponse à {who}")
+        self.reply_orig.set_text(self._excerpt(m))
+        self.reply_bar.set_no_show_all(False)
+        self.reply_bar.show_all()
+        self.input.grab_focus()
+
+    def _cancel_reply(self):
+        if self._replying is None:
+            return
+        self._replying = None
+        self.reply_bar.hide()
+        self.reply_bar.set_no_show_all(True)
+
+    # -- suppression -------------------------------------------------------------
+    def _confirm_delete(self, msg_id):
+        m = self.core.store.get_message(msg_id)
+        if not m or not m.outgoing or m.deleted is not None:
+            return
+        what = "ce fichier" if m.kind == "file" else "ce message"
+        if _confirm(self, f"Supprimer {what} ?",
+                    "Il sera remplacé par « Message supprimé par son auteur » chez vous et chez vos "
+                    "destinataires. Cette action est définitive.", "Supprimer"):
+            self.core.delete_message(msg_id)
+
+    def on_deleted(self, msg_id, incoming=False):
+        if self._editing == msg_id:
+            self._cancel_edit()
+        if self._replying == msg_id:
+            self._cancel_reply()
+        self._rerender(msg_id)
+        for rid in list(self._replies.get(msg_id, ())):
+            self._rerender(rid)
+        self.refresh_sidebar()
+
+    # -- copier ------------------------------------------------------------------
+    def _copy_text(self, msg_id):
+        m = self.core.store.get_message(msg_id)
+        if m and m.kind == "text" and m.deleted is None:
+            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(m.text, -1)
+
+    def _on_window_key(self, _w, event):
+        """Ctrl+C copie le texte surligné dans une bulle (les bulles ne prennent pas le focus,
+        le raccourci arriverait sinon à la zone de saisie, qui n'a rien de sélectionné)."""
+        if not (event.state & Gdk.ModifierType.CONTROL_MASK
+                and event.keyval in (Gdk.KEY_c, Gdk.KEY_C, Gdk.KEY_Insert)):
+            return False
+        focus = self.get_focus()
+        if isinstance(focus, Gtk.TextView) and focus.get_buffer().get_has_selection():
+            return False
+        if isinstance(focus, Gtk.Editable) and focus.get_selection_bounds():
+            return False
+        lbl = self._sel_label
+        if lbl is None or lbl.get_parent() is None:
+            return False
+        ok, start, end = lbl.get_selection_bounds()
+        if not ok or start == end:
+            return False
+        text = lbl.get_text()
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text[min(start, end):max(start, end)], -1)
+        return True
+
     def _start_edit(self, msg_id):
         m = self.core.store.get_message(msg_id)
-        if not m or not m.outgoing or m.kind != "text" or m.conv != self.current:
+        if not m or not m.outgoing or m.kind != "text" or m.conv != self.current or m.deleted is not None:
             return
+        self._cancel_reply()
         self._editing = msg_id
         self.edit_orig.set_text(" ".join(m.text.split()))
         self.edit_bar.set_no_show_all(False)
@@ -1086,7 +1330,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _last_editable(self):
         for m in reversed(self.core.store.messages(self.current, limit=50)):
-            if m.outgoing and m.kind == "text":
+            if m.outgoing and m.kind == "text" and m.deleted is None:
                 return m.id
         return None
 
@@ -1096,6 +1340,10 @@ class MainWindow(Gtk.ApplicationWindow):
         if m and entry:
             entry[0].set_text(m.text)
             self._set_meta(entry[1], m)
+        for rid in list(self._replies.get(msg_id, ())):
+            self._rerender(rid)
+        if self._replying == msg_id and m:
+            self.reply_orig.set_text(self._excerpt(m))
         self.refresh_sidebar()
 
     def _show_history(self, msg_id):
@@ -1383,6 +1631,175 @@ class AvatarPicker(Gtk.Box):
             dlg.format_secondary_text(e.message)
             dlg.run()
             dlg.destroy()
+
+
+class EmojiPopover(Gtk.Popover):
+    """Tous les emoji, rangés par catégorie, avec recherche en français et emoji récents.
+    Un clic insère l'emoji dans la zone de saisie, à l'emplacement du curseur."""
+
+    RECENT_MAX = 24
+
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.core = win, win.core
+        self.get_style_context().add_class("emoji-popover")
+        self._built = False
+        self._sections = []         # (titre, flowbox, en-tête, onglet)
+        self._words = []            # mots recherchés (normalisés)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
+        box.set_size_request(-1, 420)
+        self.search = Gtk.SearchEntry(placeholder_text="Rechercher un emoji")
+        self.search.connect("search-changed", lambda _e: self._filter())
+        self.search.connect("activate", lambda _e: self._insert_first())
+        box.pack_start(self.search, False, False, 0)
+        self.tabs = Gtk.Box(spacing=0, homogeneous=True)
+        self.tabs.get_style_context().add_class("emoji-tabs")
+        box.pack_start(self.tabs, False, False, 0)
+        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.scroll.add(self.list)
+        overlay = Gtk.Overlay()
+        overlay.add(self.scroll)
+        self.empty = _label("Aucun emoji trouvé", "subtitle", xalign=0.5)
+        self.empty.set_halign(Gtk.Align.CENTER)
+        self.empty.set_valign(Gtk.Align.CENTER)
+        self.empty.set_no_show_all(True)
+        overlay.add_overlay(self.empty)
+        overlay.set_overlay_pass_through(self.empty, True)
+        box.pack_start(overlay, True, True, 0)
+        self.hint = _label("", "emoji-hint")
+        self.hint.set_ellipsize(Pango.EllipsizeMode.END)
+        box.pack_start(self.hint, False, False, 0)
+        self.add(box)
+        box.show_all()
+        self.connect("show", lambda *_a: self._on_show())
+
+    # -- construction (au premier affichage : ~1 900 emoji) -----------------------
+    def _on_show(self):
+        if not self._built:
+            self._build()
+        self._fill_recent()
+        self.search.set_text("")
+        self._filter()
+        self.scroll.get_vadjustment().set_value(0)
+        self.search.grab_focus()
+
+    def _section(self, title, icon):
+        header = _label(title, "emoji-section")
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                           min_children_per_line=9, max_children_per_line=9,
+                           column_spacing=0, row_spacing=0,
+                           activate_on_single_click=True, valign=Gtk.Align.START)
+        flow.connect("child-activated", lambda _f, child: self._insert(child.emoji))
+        flow.set_filter_func(self._visible)
+        self.list.pack_start(header, False, False, 0)
+        self.list.pack_start(flow, False, False, 0)
+        tab = Gtk.Button(label=icon, relief=Gtk.ReliefStyle.NONE, tooltip_text=title)
+        tab.get_style_context().add_class("emoji-tab")
+        tab.connect("clicked", lambda _b: self._jump(header))
+        self.tabs.pack_start(tab, False, True, 0)
+        self._sections.append((title, flow, header, tab))
+        return flow
+
+    def _cell(self, emoji):
+        child = Gtk.FlowBoxChild()
+        lbl = Gtk.Label(label=emoji.char)
+        lbl.get_style_context().add_class("emoji-cell")
+        child.add(lbl)
+        child.emoji = emoji
+        child.set_tooltip_text(emoji.name)
+        child.connect("enter-notify-event", lambda *_a: self.hint.set_text(f"{emoji.char}  {emoji.name}")
+                      and False)
+        return child
+
+    def _build(self):
+        self._built = True
+        self.recent_flow = self._section("Récents", "🕓")
+        flows = {}
+        for group, icon, title in emojis.GROUPS:
+            flows[group] = self._section(title, icon)
+        for e in emojis.load():
+            flow = flows.get(e.group)
+            if flow is not None and self._renderable(e.char):
+                flow.add(self._cell(e))
+        self.list.show_all()
+        self.tabs.show_all()
+
+    def _renderable(self, char):
+        """Écarte les emoji que la police du poste ne sait pas dessiner en un seul glyphe
+        (séquences récentes affichées en plusieurs morceaux)."""
+        if not hasattr(self, "_measure"):
+            self._measure = self.create_pango_layout("")
+            self._measure.set_font_description(Pango.FontDescription.from_string("22px"))
+            self._measure.set_text("😀", -1)
+            self._ref_width = self._measure.get_pixel_size()[0] or 28
+        self._measure.set_text(char, -1)
+        return self._measure.get_pixel_size()[0] <= self._ref_width * 1.4
+
+    def _recent(self):
+        try:
+            return [c for c in json.loads(self.core.store.get_setting("emoji_recent", "[]")) if isinstance(c, str)]
+        except ValueError:
+            return []
+
+    def _fill_recent(self):
+        for child in self.recent_flow.get_children():
+            child.destroy()
+        by_char = {e.char: e for e in emojis.load()}
+        for char in self._recent():
+            e = by_char.get(char)
+            if e:
+                self.recent_flow.add(self._cell(e))
+        self.recent_flow.show_all()
+
+    # -- recherche -------------------------------------------------------------------
+    def _visible(self, child):
+        words = self._words
+        return not words or child.emoji.matches(words)
+
+    def _filter(self):
+        query = self.search.get_text().strip()
+        self._words = emojis.fold(query).split()
+        found = False
+        for title, flow, header, tab in self._sections:
+            flow.invalidate_filter()
+            recent = title == "Récents"
+            count = sum(1 for c in flow.get_children() if self._visible(c))
+            show = count > 0 and not (recent and self._words)
+            flow.set_visible(show)
+            header.set_visible(show)
+            tab.set_sensitive(show)
+            found = found or show
+        self.empty.set_visible(not found)
+        self.tabs.set_visible(not self._words)
+        self.hint.set_text("")
+
+    def _first_visible(self):
+        for title, flow, _h, _t in self._sections:
+            if flow.get_visible() and not (title == "Récents" and self._words):
+                for child in flow.get_children():
+                    if self._visible(child):
+                        return child.emoji
+        return None
+
+    def _jump(self, header):
+        alloc = header.get_allocation()
+        self.scroll.get_vadjustment().set_value(alloc.y)
+
+    # -- insertion -------------------------------------------------------------------
+    def _insert_first(self):
+        e = self._first_visible()
+        if e:
+            self._insert(e)
+
+    def _insert(self, emoji):
+        buf = self.win.input.get_buffer()
+        buf.delete_selection(True, True)
+        buf.insert_at_cursor(emoji.char)
+        recent = [emoji.char] + [c for c in self._recent() if c != emoji.char]
+        self.core.store.set_setting("emoji_recent", json.dumps(recent[:self.RECENT_MAX]))
+        self.popdown()
+        self.win.input.grab_focus()
 
 
 class GifPopover(Gtk.Popover):
@@ -1924,11 +2341,15 @@ class GroupDialog:
 # Application
 # ==========================================================================
 class QChatApp(Gtk.Application):
-    def __init__(self, home=None, port=DEFAULT_PORT, discovery=True, background=False):
+    def __init__(self, home=None, port=DEFAULT_PORT, discovery=True, background=False, restore=None,
+                 relaunch_args=()):
         flags = Gio.ApplicationFlags.NON_UNIQUE if home else Gio.ApplicationFlags.FLAGS_NONE
         super().__init__(application_id=APP_ID, flags=flags)
         self._home, self._port, self._discovery = home, port, discovery
         self._background = background
+        self._restore = restore
+        self._relaunch_args = list(relaunch_args)
+        self._update_version = None
         self.core = None
         self.win = None
         self.notifier = None
@@ -1959,6 +2380,7 @@ class QChatApp(Gtk.Application):
         self.notifier = Notifier(self._on_notification_clicked)
         for name, cb, accel in (
                 ("quit", lambda *_a: self.quit(), "<Primary>q"),
+                ("restart", lambda *_a: self._restart(), None),
                 ("add-contact", lambda *_a: self._ensure_window().add_contact_dialog(), "<Primary>n"),
                 ("new-group", lambda *_a: self._ensure_window().new_group_dialog(), "<Primary>g"),
                 ("scan", lambda *_a: ScanDialog(self._ensure_window()), "<Primary>d"),
@@ -1969,6 +2391,8 @@ class QChatApp(Gtk.Application):
             if accel:
                 self.set_accels_for_action(f"app.{name}", [accel])
         self.hold()     # reste actif fenêtre fermée, pour les notifications
+        self._announce_update()
+        GLib.timeout_add_seconds(UPDATE_POLL, self._check_update)
 
     def do_activate(self):
         if self.core is None:
@@ -1980,6 +2404,9 @@ class QChatApp(Gtk.Application):
             win.hide()
             return
         win.present()
+        if self._restore:
+            win.open_conv(self._restore)
+            self._restore = None
         if not self.core.name:
             self._ask_name()
 
@@ -1987,6 +2414,48 @@ class QChatApp(Gtk.Application):
         if self.core:
             self.core.stop()
         Gtk.Application.do_shutdown(self)
+
+    # -- mises à jour automatiques ----------------------------------------------
+    def _announce_update(self):
+        """Après une mise à jour, une notification indique la nouvelle version."""
+        store = self.core.store
+        previous = store.get_setting("last_version")
+        if previous != __version__:
+            store.set_setting("last_version", __version__)
+            if previous and updater.is_newer(__version__, previous):
+                self.notifier.notify("QChat a été mis à jour",
+                                     f"Version {__version__} installée (précédente : {previous}).", None)
+
+    def _check_update(self):
+        if self._update_version is None:
+            self._update_version = updater.pending_update()
+            if self._update_version:
+                log.info("QChat %s installé : redémarrage dès que possible", self._update_version)
+                if self.win is not None:
+                    self.win.set_update_ready(self._update_version)
+        if self._update_version and updater.auto_restart_enabled() and self._can_restart():
+            self._restart()
+            return False
+        return True
+
+    def _can_restart(self):
+        """Pas de redémarrage pendant que l'on écrit ou qu'une boîte de dialogue est ouverte."""
+        win = self.win
+        others = [w for w in self.get_windows() if w is not win and w.get_visible()]
+        if others:
+            return False
+        return win is None or not win.has_draft()
+
+    def _restart(self):
+        args = list(self._relaunch_args)
+        win = self.win
+        if win is not None and win.get_visible():
+            if win.current:
+                args += ["--restore", win.current]
+        else:
+            args.append("--background")
+        updater.relaunch(args)
+        self.quit()
 
     def _ensure_window(self):
         if self.win is None:
@@ -2056,6 +2525,8 @@ class QChatApp(Gtk.Application):
             win.on_reaction(**data)
         elif name == "edited":
             win.on_edited(**data)
+        elif name == "deleted":
+            win.on_deleted(**data)
         elif name == "wizz":
             self._show_wizz(**data)
         elif name == "key_changed":

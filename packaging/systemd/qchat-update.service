@@ -1,0 +1,12 @@
+[Unit]
+Description=Mise à jour automatique de QChat
+Documentation=https://github.com/arthurderichard/qchat
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/qchat/qchat-update
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

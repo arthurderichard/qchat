@@ -129,6 +129,8 @@ class Message:
     ts: float
     status: str
     edited: float = None        # date de la dernière modification, None si jamais modifié
+    reply_to: str = None        # identifiant du message auquel celui-ci répond
+    deleted: float = None       # date de suppression par son auteur, None sinon
 
     @property
     def outgoing(self):
@@ -145,6 +147,14 @@ class Store:
         self._db.execute("PRAGMA journal_mode = WAL")
         self._db.executescript(SCHEMA)
         self._lock = threading.RLock()
+        self._migrate()
+
+    def _migrate(self):
+        """Colonnes ajoutées après la création des premières bases."""
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(messages)")}
+        for name, decl in (("reply_to", "TEXT"), ("deleted", "REAL")):
+            if name not in cols:
+                self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {decl}")
 
     def close(self):
         with self._lock:
@@ -302,16 +312,35 @@ class Store:
 
     # -- messages -----------------------------------------------------------
     _M = ("SELECT id, conv, sender_id, kind, text, ts, status, "
-          "(SELECT MAX(e.ts) FROM message_edits e WHERE e.msg_id = messages.id) FROM messages")
+          "(SELECT MAX(e.ts) FROM message_edits e WHERE e.msg_id = messages.id), reply_to, deleted "
+          "FROM messages")
 
-    def add_message(self, msg_id, conv, sender_id, text, ts, status, kind="text", unread=False):
+    def add_message(self, msg_id, conv, sender_id, text, ts, status, kind="text", unread=False,
+                    reply_to=None):
         """Insère un message ; renvoie None si déjà connu (doublon)."""
         try:
-            self._x("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (msg_id, conv, sender_id, kind, text, ts, status, int(unread)))
+            self._x("INSERT INTO messages (id, conv, sender_id, kind, text, ts, status, unread, reply_to) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (msg_id, conv, sender_id, kind, text, ts, status, int(unread), reply_to))
         except sqlite3.IntegrityError:
             return None
-        return Message(msg_id, conv, sender_id, kind, text, ts, status)
+        return Message(msg_id, conv, sender_id, kind, text, ts, status, reply_to=reply_to)
+
+    def delete_message(self, msg_id, ts):
+        """Supprime le contenu d'un message (texte, versions, réactions, pièce jointe) en gardant sa
+        place dans la conversation. Renvoie le chemin de la pièce jointe à effacer, '' s'il n'y en a
+        pas, ou None si le message est inconnu ou déjà supprimé."""
+        with self._lock:
+            m = self.get_message(msg_id)
+            if not m or m.deleted is not None or m.kind == "system":
+                return None
+            att = self.get_attachment(msg_id)
+            self._x("UPDATE messages SET text='', deleted=? WHERE id=?", (ts, msg_id))
+            self._x("DELETE FROM message_edits WHERE msg_id=?", (msg_id,))
+            self._x("DELETE FROM reactions WHERE msg_id=?", (msg_id,))
+            self._x("DELETE FROM attachments WHERE msg_id=?", (msg_id,))
+            self._x("DELETE FROM outbox WHERE msg_id=?", (msg_id,))
+            return att.path if att else ""
 
     def messages(self, conv, limit=500):
         rows = self._q(self._M + " WHERE conv=? ORDER BY ts DESC LIMIT ?", (conv, limit))
@@ -340,7 +369,8 @@ class Store:
         Une modification plus ancienne que la dernière connue est ignorée."""
         with self._lock:
             m = self.get_message(msg_id)
-            if not m or m.text == text or (m.edited is not None and ts <= m.edited):
+            if (not m or m.deleted is not None or m.text == text
+                    or (m.edited is not None and ts <= m.edited)):
                 return False
             try:
                 self._x("INSERT INTO message_edits VALUES (?, ?, ?)", (msg_id, m.text, ts))

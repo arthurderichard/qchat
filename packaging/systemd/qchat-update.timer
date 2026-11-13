@@ -1,0 +1,12 @@
+[Unit]
+Description=Recherche des mises à jour de QChat (2 fois par jour au plus)
+
+[Timer]
+# 10 h et 15 h (± 30 min pour étaler les postes) ; une vérification manquée (poste éteint)
+# est rattrapée une seule fois au démarrage suivant.
+OnCalendar=*-*-* 10,15:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

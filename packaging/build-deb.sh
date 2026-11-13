@@ -29,6 +29,11 @@ exec python3 -m qchat "$@"
 EOF
 chmod 755 "$ROOT/usr/bin/qchat"
 
+# Mises à jour automatiques : minuteur systemd qui interroge le dépôt apt de QChat.
+install -D -m 755 "$SRC/packaging/qchat-update" "$ROOT/usr/lib/qchat/qchat-update"
+install -D -m 644 "$SRC/packaging/systemd/qchat-update.service" "$ROOT/usr/lib/systemd/system/qchat-update.service"
+install -D -m 644 "$SRC/packaging/systemd/qchat-update.timer" "$ROOT/usr/lib/systemd/system/qchat-update.timer"
+
 install -m 644 "$SRC/data/qchat.svg" "$ROOT/usr/share/icons/hicolor/scalable/apps/qchat.svg"
 
 desktop() {   # $1 = arguments supplémentaires de la commande
@@ -108,10 +113,27 @@ fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications || true
 fi
+# Minuteur des mises à jour automatiques (qchat-update.timer)
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    if [ "$0" != "${0%postinst}" ] && [ "$1" = configure ]; then
+        systemctl enable qchat-update.timer >/dev/null 2>&1 || true
+        systemctl start qchat-update.timer || true
+    fi
+fi
 exit 0
 EOF
     chmod 755 "$ROOT/DEBIAN/$script"
 done
+cat > "$ROOT/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    systemctl disable --now qchat-update.timer >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+chmod 755 "$ROOT/DEBIAN/prerm"
 
 mkdir -p "$SRC/dist"
 OUT="$SRC/dist/qchat_${VERSION}_all.deb"

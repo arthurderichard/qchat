@@ -113,6 +113,24 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .edit-bar { background-color: $input_bg; border-radius: 14px; padding: 2px 4px 2px 14px;
                    margin-bottom: 6px; border-left: 3px solid $accent; box-shadow: 0 1px 2px $shadow; }
 .qchat .edit-bar .edit-title { color: $accent; font-weight: bold; font-size: smaller; }
+.qchat .quote { border-left: 3px solid $accent; border-radius: 4px; padding: 3px 8px;
+               margin: 2px 0 4px 0; background-color: alpha($fg, 0.06); }
+.qchat .bubble.out .quote { background-color: alpha(#ffffff, 0.35); }
+.qchat .quote-name { font-weight: bold; font-size: smaller; color: $accent; }
+.qchat .quote-text { font-size: smaller; color: $muted; }
+.qchat .bubble.out .quote-text { color: $out_meta; }
+.qchat .bubble.deleted { background-color: transparent; box-shadow: none;
+                         border: 1px dashed alpha($muted, 0.6); }
+.qchat .bubble.deleted .meta { color: $muted; }
+.qchat .deleted-text { font-style: italic; color: $muted; }
+.qchat .flash .bubble { box-shadow: 0 0 0 3px alpha($accent, 0.55); }
+.qchat .interactions-btn { border-radius: 999px; padding: 2px 10px; margin-right: 4px; }
+.emoji-popover .emoji-cell { font-size: 22px; padding: 2px; }
+.emoji-popover flowboxchild { padding: 1px; border-radius: 8px; min-width: 36px; min-height: 34px; }
+.emoji-popover flowboxchild:hover { background-color: alpha(#808080, 0.18); }
+.emoji-popover .emoji-section { font-weight: bold; font-size: smaller; opacity: 0.7; margin: 6px 4px 2px 4px; }
+.emoji-popover .emoji-tab { font-size: 17px; padding: 2px; min-height: 0; min-width: 0; }
+.emoji-popover .emoji-hint { font-size: smaller; opacity: 0.75; min-height: 18px; }
 .qchat .history-version { background-color: $in_bg; color: $in_fg; border-radius: 12px;
                           padding: 8px 12px; margin-bottom: 8px; }
 .qchat .history-version.current { background-color: $out_bg; color: $out_fg; }
@@ -143,6 +161,7 @@ window.wizz-popup, window.wizz-popup > * { background-color: transparent; backgr
               border: none; box-shadow: none; border-radius: 999px; min-width: 34px; min-height: 34px;
               padding: 0; font-size: 13pt; }
 .wizz-close:hover { background-color: #ffffff; }
+.update-ready { color: $accent; background-color: alpha($accent, 0.15); border-radius: 999px; }
 .qchat .round { background-image: none; background-color: transparent; border: none;
                 box-shadow: none; border-radius: 999px; min-width: 34px; min-height: 34px;
                 padding: 0; color: $muted; }

@@ -330,6 +330,64 @@ class CoreTest(unittest.TestCase):
         time.sleep(1)
         self.assertEqual(self._reactions(self.a, msg.id), [("✅", "Chloé")])
 
+    def test_reply_to_message(self):
+        cid = self.add(self.a, self.b)
+        q = self.a.core.send_text(f"c:{cid}", "On mange où ?")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_message(q.id) is not None))
+        conv_b = self.b.contact(self.a).conv
+        r = self.b.core.send_text(conv_b, "Au japonais", reply_to=q.id)
+        self.assertEqual(r.reply_to, q.id)
+        self.assertTrue(wait_for(lambda: self.a.core.store.get_message(r.id) is not None))
+        self.assertEqual(self.a.core.store.get_message(r.id).reply_to, q.id)
+        # une réponse ne peut viser qu'un message de la même conversation
+        bad = self.b.core.send_text(conv_b, "Hors sujet", reply_to="inconnu")
+        self.assertIsNone(bad.reply_to)
+
+    def test_delete_message_everywhere(self):
+        cid = self.add(self.a, self.b)
+        msg = self.a.core.send_text(f"c:{cid}", "Oups, mauvais destinataire")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_message(msg.id) is not None))
+        conv_b = self.b.contact(self.a).conv
+        self.b.core.react(msg.id, "👍")
+        self.assertTrue(wait_for(lambda: self.a.core.store.reactions(msg.id)))
+        # Bob ne peut pas supprimer le message d'Alice, ni chez lui ni chez elle
+        self.assertFalse(self.b.core.delete_message(msg.id))
+        b_on_a = self.a.contact(self.b)
+        self.b.core.store.enqueue(self.b.contact(self.a).id, {"t": "delete", "id": "d1", "ref": msg.id,
+                                                              "ts": time.time()})
+        self.b.core.request_flush([self.b.contact(self.a).id])
+        time.sleep(1)
+        self.assertIsNone(self.a.core.store.get_message(msg.id).deleted)
+        self.assertTrue(self.a.core.delete_message(msg.id))
+        self.assertFalse(self.a.core.delete_message(msg.id))       # déjà supprimé
+        for node, conv in ((self.a, f"c:{cid}"), (self.b, conv_b)):
+            self.assertTrue(wait_for(lambda n=node: n.core.store.get_message(msg.id).deleted is not None))
+            m = node.core.store.get_message(msg.id)
+            self.assertEqual(m.text, "")
+            self.assertEqual(node.core.store.reactions(msg.id), [])
+        self.assertTrue(any(n == "deleted" and d.get("incoming") for n, d in self.b.events))
+        # plus de modification ni de réaction sur un message supprimé
+        self.assertFalse(self.a.core.edit_text(msg.id, "Nouveau texte"))
+        self.b.core.react(msg.id, "🎉")
+        self.assertEqual(self.b.core.store.reactions(msg.id), [])
+        self.assertIsNotNone(b_on_a)
+
+    def test_delete_file_removes_local_copy(self):
+        cid = self.add(self.a, self.b)
+        src = os.path.join(self.a.tmp.name, "photo.txt")
+        with open(src, "w") as f:
+            f.write("contenu")
+        msg = self.a.core.send_file(f"c:{cid}", src)
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_attachment(msg.id) is not None))
+        paths = [n.core.store.get_attachment(msg.id).path for n in (self.a, self.b)]
+        self.assertTrue(all(os.path.isfile(p) for p in paths))
+        self.a.core.delete_message(msg.id)
+        self.assertTrue(wait_for(lambda: not any(os.path.exists(p) for p in paths)))
+        self.assertIsNone(self.b.core.store.get_attachment(msg.id))
+
     def test_wizz_direct_cooldown_and_stale(self):
         cid = self.add(self.a, self.b)
         self.assertEqual(self.a.core.send_wizz(f"c:{cid}", "poke"), 0)
@@ -630,6 +688,34 @@ class FakeKlipy:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+class UpdaterTest(unittest.TestCase):
+    def test_versions(self):
+        from qchat import updater
+        self.assertTrue(updater.is_newer("1.10.0", "1.9.3"))
+        self.assertFalse(updater.is_newer("1.4.0", "1.4.0"))
+        self.assertFalse(updater.is_newer("1.3.9", "1.4.0"))
+        self.assertTrue(updater.is_newer("2.0", "1.99.99"))
+
+    def test_pending_update_reads_disk(self):
+        from qchat import __version__, updater
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "__init__.py")
+            self.assertIsNone(updater.pending_update(d))           # fichier absent
+            with open(path, "w") as f:
+                f.write(f'__version__ = "{__version__}"\n')
+            self.assertIsNone(updater.pending_update(d))
+            with open(path, "w") as f:
+                f.write('# QChat\n\n__version__ = "99.0.0"\n')
+            self.assertEqual(updater.pending_update(d), "99.0.0")
+        old = os.environ.pop("QCHAT_AUTO_RESTART", None)
+        try:
+            self.assertTrue(updater.auto_restart_enabled("/usr/share/qchat/qchat"))
+            self.assertFalse(updater.auto_restart_enabled("/home/moi/src/qchat"))
+        finally:
+            if old is not None:
+                os.environ["QCHAT_AUTO_RESTART"] = old
 
 
 class GifsTest(unittest.TestCase):

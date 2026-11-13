@@ -12,9 +12,11 @@ Aucun serveur : chaque poste discute directement avec les autres.
   réglage du bureau (et ses changements en direct), ou se force via ☰ › Thème.
 - **Réactions par emoji** sur les messages et les fichiers (👍 ❤️ 😂 🎉 ✅…).
 - **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
+- **Réponse à un message** précis (citation cliquable) et **suppression** de ses propres messages.
+- **Emoji** : sélecteur complet (bouton 😊 de la barre de message) avec recherche en français.
 - **Photos de profil et de groupe**, synchronisées chez tous vos contacts.
 - **GIF** : recherche et envoi de GIF depuis la barre de message, sans rien configurer (KLIPY).
-- **Wizz** : `/wizz` (ou `/poke`) fait surgir chez le destinataire une fenêtre animée et sonore.
+- **Wizz** : `/wizz` (ou `/poke`), ou le menu *Interactions* de la conversation, fait surgir chez le destinataire une fenêtre animée et sonore.
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
@@ -57,8 +59,28 @@ sudo apt install qchat
 QChat apparaît dans le menu des applications et se lance automatiquement en arrière-plan à
 l'ouverture de session suivante. Pour le démarrer tout de suite : `qchat`.
 
-**Mises à jour** : elles arrivent avec les mises à jour habituelles du système
-(`sudo apt update && sudo apt upgrade`, ou le gestionnaire de mises à jour).
+**Mises à jour automatiques** (depuis la 1.5.0) : le paquet installe un minuteur systemd,
+`qchat-update.timer`, qui interroge le dépôt QChat deux fois par jour au plus : vers 10 h et 15 h
+(± 30 min pour étaler les postes), une vérification manquée poste éteint étant rattrapée au démarrage.
+Il ne consulte que ce dépôt signé et ne met à jour que le paquet `qchat` (avec ses éventuelles
+nouvelles dépendances). Dès que la nouvelle version est installée, QChat se relance tout seul : sans
+rien changer s'il tournait en arrière-plan, sur la même conversation si la fenêtre était ouverte. Il
+attend pour cela qu'aucun message ne soit en cours de saisie ni aucune fenêtre secondaire ouverte.
+Une notification annonce ensuite la nouvelle version.
+
+**Redémarrer QChat** (menu ☰) relance l'application à la demande, par exemple juste après une mise à
+jour faite à la main avec apt. Quand une version plus récente est installée, le bouton ☰ est mis en
+évidence et l'entrée devient « Redémarrer pour passer en X.Y.Z ».
+
+```bash
+systemctl list-timers qchat-update.timer     # prochaine vérification
+sudo systemctl start qchat-update.service    # vérifier tout de suite
+journalctl -u qchat-update.service           # historique des mises à jour
+sudo systemctl disable --now qchat-update.timer   # désactiver les mises à jour automatiques
+```
+
+Les postes encore en 1.4.0 ou avant doivent passer une fois à la main en 1.5.0
+(`sudo apt update && sudo apt upgrade`) ; ensuite tout est automatique.
 
 **Désinstallation** :
 
@@ -146,7 +168,22 @@ contacts n'ont besoin ni d'Internet ni de rien d'autre. La recherche passe par l
 (api.klipy.com), avec le filtrage de contenu le plus strict ; c'est la seule fonction de QChat qui
 contacte Internet.
 
-**Wizz** : tapez `/wizz` (ou son alias `/poke`) puis Entrée. Chez le destinataire — dans un groupe, chez
+**Répondre à un message** : survolez-le et cliquez sur ↩ (ou clic droit › *Répondre*). Le message cité
+apparaît au-dessus de la réponse ; cliquez sur la citation pour retrouver l'original. Échap annule.
+
+**Supprimer un message** : clic droit sur l'un de vos messages › *Supprimer*. Chez vous comme chez vos
+destinataires, il est remplacé par « Message supprimé par son auteur » ; son texte, ses versions, ses
+réactions et sa pièce jointe sont effacés.
+
+**Emoji** : le bouton 😊, à droite de *GIF*, ouvre la liste de tous les emoji, par catégorie, avec les
+emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
+le premier résultat.
+
+**Copier** : surlignez un passage d'un message puis Ctrl+C, ou clic droit › *Copier le texte* pour
+le message entier. Les images s'affichent sans nom de fichier ; clic droit pour les enregistrer.
+
+**Wizz** : tapez `/wizz` (ou son alias `/poke`) puis Entrée, ou passez par le bouton **⚡ Interactions**
+en haut d'une conversation avec une personne. Chez le destinataire — dans un groupe, chez
 tous les membres — une fenêtre surgit au milieu de l'écran principal : elle tremble, l'avatar rebondit,
 « WIZZ ! » ondule en arc-en-ciel au son d'un bzzz. *Répondre* ouvre la conversation ; elle se ferme seule
 après quelques secondes. Anti-spam : un wizz ou poke toutes les 30 s au plus, toutes conversations confondues (et pas plus d'une fenêtre par contact toutes les 30 s à la réception) ; un wizz reçu plus de 2 min
@@ -209,6 +246,8 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/notify.py`  | notifications D-Bus                                         |
 | `qchat/gui.py`     | interface GTK 3                                             |
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
+| `qchat/emojis.py`  | liste des emoji (noms et mots-clés français fournis par GTK)  |
+| `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |
 | `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
 | `qchat/wizz.py`    | fenêtre animée des wizz / poke et son bzzz                  |
 

@@ -624,16 +624,22 @@ class Core:
             return self.store.group_member_ids(ident)
         return [int(ident)]
 
-    def send_text(self, conv, text):
+    def send_text(self, conv, text, reply_to=None):
+        """Envoie un message texte ; ``reply_to`` : identifiant du message auquel il répond."""
         text = text.strip()[:MAX_TEXT]
         if not text:
             return None
         msg_id = uuid.uuid4().hex
         ts = time.time()
         payload = {"t": "msg", "id": msg_id, "ts": ts, "text": text}
+        ref = self.store.get_message(reply_to) if reply_to else None
+        if ref and ref.conv == conv and ref.kind != "system" and ref.deleted is None:
+            payload["reply"] = ref.id
+        else:
+            reply_to = None
         targets = self._targets(conv, payload)
         msg = self.store.add_message(msg_id, conv, None, text, ts,
-                                     "pending" if targets else "delivered")
+                                     "pending" if targets else "delivered", reply_to=reply_to)
         for cid in targets:
             self.store.enqueue(cid, payload, msg_id)
         self._emit("message", message=msg)
@@ -679,7 +685,7 @@ class Core:
     def react(self, msg_id, emoji):
         """Ajoute ma réaction ``emoji`` à un message, ou la retire si elle y est déjà."""
         m = self.store.get_message(msg_id)
-        if not m or m.kind == "system" or not valid_emoji(emoji):
+        if not m or m.kind == "system" or m.deleted is not None or not valid_emoji(emoji):
             return
         me = self.identity.vk_hex
         on = not self.store.has_reaction(msg_id, me, emoji)
@@ -695,7 +701,8 @@ class Core:
         """Modifie un de mes messages texte ; l'ancienne version reste dans l'historique."""
         m = self.store.get_message(msg_id)
         text = text.strip()[:MAX_TEXT]
-        if not m or not m.outgoing or m.kind != "text" or not text or text == m.text:
+        if (not m or not m.outgoing or m.kind != "text" or m.deleted is not None or not text
+                or text == m.text):
             return False
         ts = max(time.time(), (m.edited or m.ts) + 0.001)
         self.store.edit_message(msg_id, text, ts)
@@ -706,6 +713,51 @@ class Core:
         self._emit("edited", msg_id=msg_id, incoming=False)
         self.request_flush(targets)
         return True
+
+    def delete_message(self, msg_id):
+        """Supprime un de mes messages, chez moi et chez les destinataires (« Message supprimé »)."""
+        m = self.store.get_message(msg_id)
+        if not m or not m.outgoing or m.deleted is not None:
+            return False
+        ts = time.time()
+        path = self.store.delete_message(msg_id, ts)
+        if path is None:
+            return False
+        self._remove_attachment_file(path)
+        payload = {"t": "delete", "id": uuid.uuid4().hex, "ref": msg_id, "ts": ts}
+        targets = self._targets(m.conv, payload)
+        for cid in targets:
+            self.store.enqueue(cid, payload)
+        self._emit("deleted", msg_id=msg_id, incoming=False)
+        self.request_flush(targets)
+        return True
+
+    def _remove_attachment_file(self, path):
+        """Efface la copie locale d'une pièce jointe (et son dossier dédié)."""
+        if not path:
+            return
+        folder = os.path.dirname(path)
+        if os.path.dirname(folder) == os.path.normpath(self.files_dir):
+            shutil.rmtree(folder, ignore_errors=True)
+        else:
+            _unlink(path)
+
+    def _on_delete(self, cid, obj):
+        ref, ts = obj.get("ref"), obj.get("ts")
+        if not (isinstance(ref, str) and _MSG_ID.fullmatch(ref)):
+            return
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            ts = time.time()
+        gid = obj.get("gid")
+        conv = f"g:{gid}" if gid is not None else f"c:{cid}"
+        m = self.store.get_message(ref)
+        # Seul l'auteur peut supprimer, dans la conversation d'origine.
+        if not m or m.conv != conv or m.sender_id != cid or m.kind == "system":
+            return
+        path = self.store.delete_message(ref, min(ts, time.time() + 60))
+        if path is not None:
+            self._remove_attachment_file(path)
+            self._emit("deleted", msg_id=ref, incoming=True)
 
     def send_wizz(self, conv, kind="wizz"):
         """Envoie un wizz (ou un poke) : une fenêtre animée s'ouvre chez le destinataire.
@@ -1062,6 +1114,8 @@ class Core:
             self._on_group_avatar(cid, obj)
         elif t == "wizz":
             self._on_wizz(cid, obj)
+        elif t == "delete":
+            self._on_delete(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")
@@ -1078,7 +1132,11 @@ class Core:
             conv = f"g:{gid}"
         else:
             conv = f"c:{cid}"
-        msg = self.store.add_message(msg_id, conv, cid, text[:MAX_TEXT], ts, "received", unread=True)
+        reply = obj.get("reply")
+        if not (isinstance(reply, str) and _MSG_ID.fullmatch(reply)):
+            reply = None
+        msg = self.store.add_message(msg_id, conv, cid, text[:MAX_TEXT], ts, "received", unread=True,
+                                     reply_to=reply)
         if msg:
             self._emit("message", message=msg, incoming=True)
 
@@ -1181,8 +1239,8 @@ class Core:
         else:
             conv = f"c:{cid}"
         m = self.store.get_message(ref)
-        if m and (m.conv != conv or m.kind == "system"):
-            return      # on ne réagit qu'aux messages de la conversation où l'on se trouve
+        if m and (m.conv != conv or m.kind == "system" or m.deleted is not None):
+            return      # on ne réagit qu'aux messages (non supprimés) de la conversation
         # Message pas encore reçu (groupe : réaction arrivée avant lui) : on garde la réaction.
         if self.store.set_reaction(ref, self.store.get_contact(cid).vk, emoji, on):
             self._emit("reaction", msg_id=ref, contact_id=cid, emoji=emoji, on=on, incoming=True)
