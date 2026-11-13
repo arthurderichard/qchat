@@ -11,6 +11,7 @@ les événements sont remontés via ``on_event(nom, données)`` depuis des threa
 d'arrière-plan.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -36,6 +37,8 @@ DISCOVERY_PORT = 45454
 ANNOUNCE_INTERVAL = 30
 RETRY_INTERVAL = 20
 ONLINE_TIMEOUT = 75
+MAX_AVATAR = 64 * 1024          # photo de profil ou de groupe (déjà réduite par l'interface)
+AVATAR_RETRY = 300              # délai avant de redemander une photo à un contact
 ANNOUNCE_MAX_AGE = 15 * 60
 MAX_FRAME = 256 * 1024
 MAX_TEXT = 16000
@@ -119,6 +122,21 @@ def sniff_mime(path):
         if head[offset:offset + len(magic)] == magic:
             return mime
     return None
+
+
+def _sniff_bytes(data):
+    """Type MIME d'une image d'après ses premiers octets (photos de profil), ou None."""
+    for offset, magic, mime in _MAGIC:
+        if mime.startswith("image/") and data[offset:offset + len(magic)] == magic:
+            return mime
+    return None
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def valid_emoji(emoji):
@@ -215,6 +233,9 @@ class Core:
         self.store = Store(os.path.join(self.home, "qchat.db"))
         self.files_dir = os.path.join(self.home, "files")
         os.makedirs(self.files_dir, mode=0o700, exist_ok=True)
+        self.avatars_dir = os.path.join(self.home, "avatars")
+        os.makedirs(self.avatars_dir, mode=0o700, exist_ok=True)
+        self._avatar_asked = {}   # contact_id -> (sha demandé, date)
         self.port = port
         self.discovery_enabled = discovery
         self.on_event = on_event or (lambda name, data: None)
@@ -283,7 +304,177 @@ class Core:
             log.exception("Erreur dans le gestionnaire d'événement %s", name)
 
     def _profile(self):
-        return {"name": self.name or "Anonyme", "ips": netutil.local_ips(), "port": self.port}
+        mine = self.store.get_avatar("me")
+        return {"name": self.name or "Anonyme", "ips": netutil.local_ips(), "port": self.port,
+                "avatar": mine[0] if mine else ""}
+
+    # ======================================================================
+    # Photos de profil et de groupe
+    # ======================================================================
+    @staticmethod
+    def _avatar_owner_of(contact):
+        return f"vk:{contact.vk}" if contact and contact.vk else None
+
+    def avatar_path(self, conv_or_owner):
+        """Chemin de la photo de 'me', d'un contact ('c:<id>') ou d'un groupe ('g:<gid>'), ou None."""
+        owner = conv_or_owner
+        if owner.startswith("c:"):
+            owner = self._avatar_owner_of(self.store.get_contact(int(owner[2:])))
+            if owner is None:
+                return None
+        row = self.store.get_avatar(owner)
+        return row[1] if row and os.path.isfile(row[1]) else None
+
+    def _store_avatar(self, owner, data, ts):
+        """Enregistre une photo (déjà validée) ; renvoie son SHA-256."""
+        sha = hashlib.sha256(data).hexdigest()
+        old = self.store.get_avatar(owner)
+        tag = hashlib.sha256(owner.encode()).hexdigest()[:16]
+        ext = {"image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(_sniff_bytes(data), ".jpg")
+        path = os.path.join(self.avatars_dir, f"{tag}-{sha[:16]}{ext}")
+        tmp = path + ".part"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        self.store.set_avatar(owner, sha, path, ts)
+        if old and old[1] != path:
+            _unlink(old[1])
+        return sha
+
+    def _drop_avatar(self, owner):
+        old = self.store.get_avatar(owner)
+        if old:
+            self.store.delete_avatar(owner)
+            _unlink(old[1])
+        return bool(old)
+
+    @staticmethod
+    def _valid_avatar(data):
+        return isinstance(data, bytes) and 0 < len(data) <= MAX_AVATAR and _sniff_bytes(data) is not None
+
+    @staticmethod
+    def _decode_avatar(sha, data):
+        """Photo reçue : bytes valides et conformes à leur empreinte, ou None."""
+        if not (isinstance(sha, str) and isinstance(data, str) and len(data) <= MAX_AVATAR * 4 // 3 + 4):
+            return None
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (ValueError, TypeError):
+            return None
+        ok = Core._valid_avatar(raw) and hashlib.sha256(raw).hexdigest() == sha
+        return raw if ok else None
+
+    def _my_avatar_payload(self):
+        row = self.store.get_avatar("me")
+        payload = {"t": "avatar", "id": uuid.uuid4().hex, "sha": row[0] if row else ""}
+        if row:
+            try:
+                with open(row[1], "rb") as f:
+                    payload["data"] = base64.b64encode(f.read()).decode()
+            except OSError:
+                payload["sha"] = ""
+        return payload
+
+    def set_avatar(self, data):
+        """Change ma photo de profil (bytes d'une image PNG/JPEG…) ; None la retire.
+        Elle est envoyée à tous mes contacts, y compris ceux hors ligne (file d'envoi)."""
+        if data is None:
+            if not self._drop_avatar("me"):
+                return False
+        elif self._valid_avatar(data):
+            self._store_avatar("me", data, time.time())
+        else:
+            raise ValueError("image invalide ou trop lourde")
+        payload = self._my_avatar_payload()
+        targets = [c.id for c in self.store.contacts() if c.vk]
+        for cid in targets:
+            self.store.enqueue(cid, payload)
+        self._emit("avatars_changed")
+        self.request_flush(targets)
+        return True
+
+    def _group_avatar_card(self, gid):
+        row = self.store.get_avatar(f"g:{gid}")
+        if not row:
+            return None
+        try:
+            with open(row[1], "rb") as f:
+                return {"sha": row[0], "data": base64.b64encode(f.read()).decode(), "ts": row[2]}
+        except OSError:
+            return None
+
+    def set_group_avatar(self, gid, data):
+        """Change la photo d'un groupe (n'importe quel membre peut le faire) ; None la retire."""
+        if not self.store.get_group(gid):
+            return False
+        ts = time.time()
+        owner = f"g:{gid}"
+        row = self.store.get_avatar(owner)
+        ts = max(ts, (row[2] + 0.001) if row else 0)
+        if data is None:
+            if not row:
+                return False
+            self._drop_avatar(owner)
+            # Marqueur de retrait daté, pour qu'une ancienne photo reçue plus tard ne revienne pas.
+            self.store.set_setting(f"gavatar_removed:{gid}", str(ts))
+            payload = {"t": "gavatar", "id": uuid.uuid4().hex, "gid": gid, "sha": "", "ts": ts}
+            self._system(owner, "Vous avez retiré la photo du groupe.")
+        elif self._valid_avatar(data):
+            sha = self._store_avatar(owner, data, ts)
+            payload = {"t": "gavatar", "id": uuid.uuid4().hex, "gid": gid, "sha": sha, "ts": ts,
+                       "data": base64.b64encode(data).decode()}
+            self._system(owner, "Vous avez changé la photo du groupe.")
+        else:
+            raise ValueError("image invalide ou trop lourde")
+        members = self.store.group_member_ids(gid)
+        for cid in members:
+            self.store.enqueue(cid, payload)
+        self._emit("avatars_changed")
+        self.request_flush(members)
+        return True
+
+    def _apply_group_avatar(self, gid, sha, data, ts):
+        """Photo de groupe reçue : appliquée si plus récente que celle connue. Renvoie True si changée."""
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool) or not isinstance(sha, str):
+            return False
+        ts = min(float(ts), time.time() + 60)
+        owner = f"g:{gid}"
+        row = self.store.get_avatar(owner)
+        removed = float(self.store.get_setting(f"gavatar_removed:{gid}", "0") or 0)
+        if (row and ts <= row[2]) or ts <= removed:
+            return False
+        if sha == "":
+            if not row:
+                return False
+            self._drop_avatar(owner)
+            self.store.set_setting(f"gavatar_removed:{gid}", str(ts))
+            return True
+        raw = self._decode_avatar(sha, data)
+        if raw is None or (row and row[0] == sha):
+            return False
+        self._store_avatar(owner, raw, ts)
+        return True
+
+    def _check_peer_avatar(self, cid, info):
+        """Hello / annonce signés : si la photo annoncée diffère de celle connue, on la demande."""
+        sha = info.get("avatar")
+        c = self.store.get_contact(cid)
+        owner = self._avatar_owner_of(c)
+        if not isinstance(sha, str) or owner is None:
+            return          # version sans photos de profil
+        row = self.store.get_avatar(owner)
+        if sha == "":
+            if row and self._drop_avatar(owner):
+                self._emit("avatars_changed")
+            return
+        if row and row[0] == sha:
+            return
+        asked = self._avatar_asked.get(cid)
+        if asked and asked[0] == sha and time.time() - asked[1] < AVATAR_RETRY:
+            return
+        self._avatar_asked[cid] = (sha, time.time())
+        self.store.enqueue(cid, {"t": "avatar?", "id": uuid.uuid4().hex})
+        self.request_flush([cid])
 
     # ======================================================================
     # API publique (appelée par l'interface)
@@ -547,6 +738,7 @@ class Core:
         for cid in members:
             self.store.enqueue(cid, {"t": "leave", "gid": gid})
         self._delete_files(f"g:{gid}")
+        self._drop_avatar(f"g:{gid}")
         self.store.delete_group(gid)
         self._emit("groups_changed")
         self.request_flush(members)
@@ -568,6 +760,9 @@ class Core:
         members.append({"vk": self.identity.vk_hex, **self._profile()})
         payload = {"t": "group", "gid": gid, "name": g.name, "members": members,
                    "added": [self.store.get_contact(cid).vk for cid in added]}
+        card = self._group_avatar_card(gid) if added else None
+        if card:
+            payload["avatar"] = card        # les nouveaux membres reçoivent la photo du groupe
         for cid in recipients:
             self.store.enqueue(cid, payload)
         self.request_flush(recipients)
@@ -740,6 +935,7 @@ class Core:
             self.store.add_ip(cid, src_ip, seen=True)
         self.store.set_port(cid, _clean_port(info.get("port")))
         self.last_seen[cid] = time.time()
+        self._check_peer_avatar(cid, info)
         if not was_online:
             self._emit("presence", contact_id=cid, online=True)
 
@@ -811,6 +1007,13 @@ class Core:
             self._on_react(cid, obj)
         elif t == "edit":
             self._on_edit(cid, obj)
+        elif t == "avatar":
+            self._on_avatar(cid, obj)
+        elif t == "avatar?":
+            self.store.enqueue(cid, self._my_avatar_payload())
+            self.request_flush([cid])
+        elif t == "gavatar":
+            self._on_group_avatar(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")
@@ -889,6 +1092,9 @@ class Core:
             ids = {cid}
             ids.update(m for m in (self._contact_from_card(card) for card in members[:256]) if m)
             self.store.create_group(gid, _clean_name(name, "Groupe"), ids)
+            card = obj.get("avatar")
+            if isinstance(card, dict):
+                self._apply_group_avatar(gid, card.get("sha"), card.get("data"), card.get("ts"))
             self._system(f"g:{gid}", f"{sender.name} vous a ajouté au groupe.")
             self._emit("contacts_changed")
             self._emit("groups_changed")
@@ -947,6 +1153,33 @@ class Core:
             return
         if self.store.edit_message(ref, text, min(ts, time.time() + 60)):
             self._emit("edited", msg_id=ref, incoming=True)
+
+    def _on_avatar(self, cid, obj):
+        owner = self._avatar_owner_of(self.store.get_contact(cid))
+        sha = obj.get("sha")
+        if owner is None or not isinstance(sha, str):
+            return
+        if sha == "":
+            changed = self._drop_avatar(owner)
+        else:
+            raw = self._decode_avatar(sha, obj.get("data"))
+            row = self.store.get_avatar(owner)
+            changed = raw is not None and not (row and row[0] == sha)
+            if changed:
+                self._store_avatar(owner, raw, time.time())
+        self._avatar_asked.pop(cid, None)
+        if changed:
+            self._emit("avatars_changed")
+
+    def _on_group_avatar(self, cid, obj):
+        gid = obj.get("gid")
+        if not isinstance(gid, str) or cid not in self.store.group_member_ids(gid):
+            return
+        if self._apply_group_avatar(gid, obj.get("sha"), obj.get("data"), obj.get("ts")):
+            who = self.store.get_contact(cid).name
+            self._system(f"g:{gid}", f"{who} a retiré la photo du groupe." if obj.get("sha") == ""
+                         else f"{who} a changé la photo du groupe.")
+            self._emit("avatars_changed")
 
     def _on_leave(self, cid, obj):
         gid = obj.get("gid")

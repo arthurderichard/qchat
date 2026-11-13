@@ -104,9 +104,10 @@ class AnimatedImage(Gtk.Image):
     """Image animée redimensionnée à la volée (Gtk.Image ne sait pas mettre une animation à l'échelle).
     ``size_fn(largeur, hauteur)`` renvoie la taille d'affichage souhaitée."""
 
-    def __init__(self, anim, size_fn):
+    def __init__(self, anim, size_fn, transform=None):
         super().__init__()
         self._size_fn = size_fn
+        self._transform = transform     # pixbuf -> pixbuf (recadrage…), remplace la mise à l'échelle
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             self._iter = anim.get_iter(None)
@@ -118,6 +119,9 @@ class AnimatedImage(Gtk.Image):
 
     def refresh(self):
         pb = self._iter.get_pixbuf()
+        if self._transform:
+            self.set_from_pixbuf(self._transform(pb))
+            return
         w, h = self._size_fn(pb.get_width(), pb.get_height())
         if (w, h) != (pb.get_width(), pb.get_height()):
             pb = pb.scale_simple(max(1, w), max(1, h), GdkPixbuf.InterpType.BILINEAR)
@@ -142,6 +146,15 @@ class AnimatedImage(Gtk.Image):
         self.refresh()
         self._schedule()
         return False
+
+
+def cover(pb, w, h):
+    """Met l'image à l'échelle pour remplir w×h puis la recadre au centre (vignettes uniformes)."""
+    pw, ph = pb.get_width(), pb.get_height()
+    scale = max(w / pw, h / ph)
+    sw, sh = max(w, round(pw * scale)), max(h, round(ph * scale))
+    scaled = pb.scale_simple(sw, sh, GdkPixbuf.InterpType.BILINEAR)
+    return scaled.new_subpixbuf((sw - w) // 2, (sh - h) // 2, w, h)
 
 
 def fit(w, h, max_w, max_h, upscale=False):

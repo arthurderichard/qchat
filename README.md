@@ -12,6 +12,8 @@ Aucun serveur : chaque poste discute directement avec les autres.
   réglage du bureau (et ses changements en direct), ou se force via ☰ › Thème.
 - **Réactions par emoji** sur les messages et les fichiers (👍 ❤️ 😂 🎉 ✅…).
 - **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
+- **Photos de profil et de groupe**, synchronisées chez tous vos contacts.
+- **GIF** : recherche et envoi de GIF depuis la barre de message, sans rien configurer (KLIPY).
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
@@ -130,6 +132,19 @@ ou flèche ↑ dans une zone de saisie vide pour le dernier envoyé). Entrée en
 Le message porte alors la mention « modifié » : cliquez dessus pour voir toutes ses versions.
 Les postes en version antérieure à 1.2.0 continuent d'afficher le texte d'origine.
 
+**Photos** : menu ☰ › *Mon identité* › **Choisir une photo…** (ou *Retirer*). L'image est recadrée en
+carré et réduite, puis envoyée à tous vos contacts, même hors ligne (elle partira dès qu'ils seront
+joignables). Pour un groupe : bouton ⋮ de la discussion › **Choisir une photo…** ; n'importe quel
+membre peut la changer, et les nouveaux membres la reçoivent avec leur invitation. Les postes en
+version antérieure à 1.3.0 continuent d'afficher les initiales.
+
+**GIF** : bouton **GIF** de la barre de message, prêt à l'emploi (aucune clé à saisir). Les tendances
+s'affichent, tapez pour chercher, survolez une vignette pour l'animer, cliquez (ou Entrée pour le premier
+résultat) pour envoyer : le GIF est téléchargé puis envoyé comme une image ordinaire, chiffrée — vos
+contacts n'ont besoin ni d'Internet ni de rien d'autre. La recherche passe par le service KLIPY
+(api.klipy.com), avec le filtrage de contenu le plus strict ; c'est la seule fonction de QChat qui
+contacte Internet.
+
 **Images et fichiers** : bouton 📎, glisser-déposer n'importe où dans la fenêtre, ou Ctrl+V (fichiers copiés
 dans le gestionnaire de fichiers, ou capture d'écran — un aperçu demande confirmation). Les images
 s'affichent en miniature, et les GIF y sont animés ; chaque pièce jointe propose *Ouvrir*, *Enregistrer
@@ -185,6 +200,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/netutil.py` | interfaces réseau locales, validation des IP                |
 | `qchat/notify.py`  | notifications D-Bus                                         |
 | `qchat/gui.py`     | interface GTK 3                                             |
+| `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
 | `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
 
 ## Publier une version

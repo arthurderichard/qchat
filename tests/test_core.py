@@ -397,6 +397,69 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(viewer.fit(1600, 1000, 320, 240), (320, 200))
         self.assertEqual(viewer.fit(100, 50, 320, 240), (100, 50))      # jamais agrandi
 
+    PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                        "1f15c4890000000d49444154789c6360f8cfc0f01f0005000201e5274fb10000000049454e44ae426082")
+
+    def _avatar_sha(self, node, conv):
+        path = node.core.avatar_path(conv)
+        if not path:
+            return None
+        import hashlib
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def test_profile_avatar(self):
+        import hashlib
+        sha = hashlib.sha256(self.PNG).hexdigest()
+        cid = self.add(self.a, self.b)
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None))
+        self.a.core.set_avatar(self.PNG)
+        conv_on_b = self.b.contact(self.a).conv
+        self.assertTrue(wait_for(lambda: self._avatar_sha(self.b, conv_on_b) == sha))
+        self.assertTrue(any(n == "avatars_changed" for n, _ in self.b.events))
+        # Chloé ajoute Alice après coup : elle obtient la photo grâce à l'empreinte du hello
+        self.add(self.c, self.a)
+        self.assertTrue(wait_for(lambda: self._avatar_sha(self.c, self.c.contact(self.a).conv) == sha))
+        # Retrait : propagé aussi
+        self.a.core.set_avatar(None)
+        self.assertTrue(wait_for(lambda: self.b.core.avatar_path(conv_on_b) is None))
+        self.assertIsNone(self.a.core.avatar_path("me"))
+        # Image invalide refusée
+        with self.assertRaises(ValueError):
+            self.a.core.set_avatar(b"pas une image")
+        with self.assertRaises(ValueError):
+            self.a.core.set_avatar(b"\x89PNG\r\n\x1a\n" + bytes(core.MAX_AVATAR))
+        # Une photo falsifiée (empreinte incorrecte) est ignorée
+        b_on_a = self.a.contact(self.b).id
+        self.a.core.store.enqueue(b_on_a, {"t": "avatar", "id": "x", "sha": "0" * 64,
+                                           "data": __import__("base64").b64encode(self.PNG).decode()})
+        self.a.core.request_flush([b_on_a])
+        time.sleep(1)
+        self.assertIsNone(self.b.core.avatar_path(conv_on_b))
+
+    def test_group_avatar(self):
+        import hashlib
+        sha = hashlib.sha256(self.PNG).hexdigest()
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid])
+        self.assertTrue(wait_for(lambda: self.b.core.store.get_group(gid) is not None))
+        self.b.core.set_group_avatar(gid, self.PNG)          # n'importe quel membre
+        self.assertTrue(wait_for(lambda: self._avatar_sha(self.a, f"g:{gid}") == sha))
+        self.assertIn("Bob a changé la photo du groupe.", self.a.texts(f"g:{gid}") +
+                      [m.text for m in self.a.core.store.messages(f"g:{gid}")])
+        # Un nouveau membre reçoit la photo avec l'invitation
+        self.a.core.add_group_members(gid, [c_cid])
+        self.assertTrue(wait_for(lambda: self._avatar_sha(self.c, f"g:{gid}") == sha))
+        # Une photo plus ancienne que la dernière connue ne la remplace pas
+        old_png = self.PNG[:-12] + self.PNG[-12:]
+        self.assertFalse(self.c.core._apply_group_avatar(gid, sha, "", 1.0))
+        self.a.core.set_group_avatar(gid, None)
+        for node in (self.b, self.c):
+            self.assertTrue(wait_for(lambda n=node: n.core.avatar_path(f"g:{gid}") is None))
+        self.assertFalse(self.c.core._apply_group_avatar(
+            gid, sha, __import__("base64").b64encode(old_png).decode(), 2.0))
+
     def test_corrupted_file_rejected(self):
         cid = self.add(self.a, self.b)
         msg = self.a.core.send_file(f"c:{cid}", self._file("a.txt", b"contenu original"))
@@ -481,6 +544,113 @@ class CoreTest(unittest.TestCase):
         proxy.close()
         self.assertNotIn(b"MOT-DE-PASSE-ULTRA-SECRET", bytes(captured))
         self.assertGreater(len(captured), 0)
+
+class FakeKlipy:
+    """Serveur HTTP local imitant l'API KLIPY (aucun accès Internet dans les tests)."""
+
+    def __init__(self, gif):
+        import http.server
+        import json as _json
+        outer = self
+        self.gif, self.requests = gif, []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                outer.requests.append(self.path)
+                base = f"http://127.0.0.1:{outer.port}"
+                if self.path.startswith("/v1/"):
+                    if "/refusee/" in self.path:
+                        self.send_response(403); self.end_headers(); return
+
+                    def media(name, w=100, h=80, size=1000):
+                        return {"url": f"{base}/m/{name}", "width": w, "height": h, "size": size}
+
+                    item = {"id": 1, "type": "gif", "title": "Happy Dance GIF by Studio", "file": {
+                        "md": {"gif": media("md.gif", size=50_000_000)},     # trop gros : écarté
+                        "sm": {"gif": media("sm.gif"), "jpg": media("sm.jpg")},
+                        "xs": {"gif": media("xs.gif", 50, 40)}}}
+                    ad = {"type": "ad", "content": "<pub>"}
+                    evil = {"id": 2, "type": "gif", "title": "x", "file": {
+                        "sm": {"gif": {"url": "https://evil.example/a.gif"},
+                               "jpg": {"url": "https://evil.example/a.jpg"}}}}
+                    body = _json.dumps({"result": True, "data": {"data": [item, ad, evil], "current_page": 1,
+                                                                 "per_page": 24, "has_next": True}}).encode()
+                    ctype = "application/json"
+                elif self.path.startswith("/m/"):
+                    body = outer.gif if self.path.endswith(".gif") else outer.jpg
+                    ctype = "image/gif"
+                else:
+                    self.send_response(404); self.end_headers(); return
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.jpg = b"\xff\xd8\xff\xe0fake-jpeg"
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class GifsTest(unittest.TestCase):
+    GIF = bytes.fromhex("47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002"
+                        "02440100") + b";"
+
+    def setUp(self):
+        from qchat import gifs
+        self.gifs = gifs
+        self.fake = FakeKlipy(self.GIF)
+        self.old_api = gifs.API
+        gifs.API = f"http://127.0.0.1:{self.fake.port}/v1"
+
+    def tearDown(self):
+        self.gifs.API = self.old_api
+        self.fake.close()
+
+    def test_search_and_download(self):
+        g = self.gifs
+        self.assertTrue(g.api_key())                        # clé intégrée : rien à configurer
+        res, has_next = g.search("danse", 2, "poste1")
+        self.assertTrue(has_next)
+        self.assertEqual(len(res), 1)               # publicité et média hors KLIPY écartés
+        req = self.fake.requests[-1]
+        self.assertTrue(req.startswith(f"/v1/{g.api_key()}/gifs/search?"), req)
+        for part in ("q=danse", "page=2", "customer_id=poste1", "content_filter=high"):
+            self.assertIn(part, req)
+        self.assertTrue(res[0]["url"].endswith("/m/sm.gif"))   # md trop lourd → taille inférieure
+        self.assertTrue(res[0]["still"].endswith("/m/sm.jpg"))
+        g.search("")
+        self.assertIn("/gifs/trending?", self.fake.requests[-1])
+        self.assertEqual(g.download(res[0]["url"]), self.GIF)
+        self.assertEqual(g.filename(res[0]["title"]), "happy-dance.gif")
+        self.assertEqual(g.filename(""), "gif.gif")
+        with self.assertRaises(g.GifError):
+            g.download("https://evil.example/f.gif")
+        with self.assertRaises(g.GifError):
+            g.download(res[0]["still"])                 # pas un GIF
+        self.assertTrue(g.download(res[0]["still"], kind="image").startswith(b"\xff\xd8"))
+        old = g.KLIPY_KEY
+        g.KLIPY_KEY = "refusee"
+        try:
+            with self.assertRaises(g.GifError) as cm:
+                g.search("chat")
+            self.assertIn("refusé la clé", str(cm.exception))
+        finally:
+            g.KLIPY_KEY = old
+
+    def test_unreachable(self):
+        self.gifs.API = "http://127.0.0.1:9/v1"
+        with self.assertRaises(self.gifs.GifError) as cm:
+            self.gifs.search("chat")
+        self.assertIn("injoignable", str(cm.exception))
 
 
 if __name__ == "__main__":

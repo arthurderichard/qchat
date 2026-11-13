@@ -74,6 +74,9 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .avatar { background-color: $avatar_bg; color: $avatar_fg; border-radius: 999px;
                  min-width: 42px; min-height: 42px; font-weight: bold; }
 .qchat .avatar.small { min-width: 36px; min-height: 36px; }
+.qchat .avatar.large { min-width: 84px; min-height: 84px; font-size: 26px; }
+.qchat .avatar.photo, .qchat .sidebar row:selected .avatar.photo {
+    background-color: $avatar_bg; background-size: cover; background-position: center; }
 .qchat .avatar.peer { background-color: transparent; border: 1px dashed $avatar_fg; }
 .qchat .sidebar row:selected .avatar { background-color: $sel_fg; color: $sel_bg; }
 .qchat .presence { background-color: $online; border-radius: 999px; min-width: 9px; min-height: 9px;
@@ -126,6 +129,10 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .composer scrollbar, .qchat .composer scrollbar slider,
 .qchat .composer scrollbar button { min-height: 0; }
 .qchat .composer .round { min-width: 36px; min-height: 36px; }
+.qchat .gif-btn { font-weight: bold; font-size: smaller; }
+.qchat .gif-btn label { padding: 0; }
+.gif-cell { background-color: alpha(#808080, 0.18); border-radius: 6px; }
+.gif-credit { font-size: smaller; font-weight: bold; opacity: 0.7; }
 .qchat .round { background-image: none; background-color: transparent; border: none;
                 box-shadow: none; border-radius: 999px; min-width: 34px; min-height: 34px;
                 padding: 0; color: $muted; }

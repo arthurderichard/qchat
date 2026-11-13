@@ -66,6 +66,12 @@ CREATE TABLE IF NOT EXISTS message_edits (
     ts REAL NOT NULL,               -- date de la modification qui l'a remplacée
     PRIMARY KEY (msg_id, ts)
 );
+CREATE TABLE IF NOT EXISTS avatars (
+    owner TEXT PRIMARY KEY,         -- 'me', 'vk:<clé publique>' ou 'g:<gid>'
+    sha TEXT NOT NULL,              -- SHA-256 de l'image
+    path TEXT NOT NULL,             -- copie locale
+    ts REAL NOT NULL                -- date du changement (le plus récent l'emporte, pour les groupes)
+);
 CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -281,6 +287,18 @@ class Store:
         with self._lock:
             self._delete_conv_messages(f"g:{gid}")
             self._x("DELETE FROM groups WHERE gid=?", (gid,))
+
+    # -- photos ---------------------------------------------------------------
+    def get_avatar(self, owner):
+        """(sha, chemin, date) de la photo de ``owner``, ou None."""
+        rows = self._q("SELECT sha, path, ts FROM avatars WHERE owner=?", (owner,))
+        return rows[0] if rows else None
+
+    def set_avatar(self, owner, sha, path, ts):
+        self._x("INSERT OR REPLACE INTO avatars VALUES (?, ?, ?, ?)", (owner, sha, path, ts))
+
+    def delete_avatar(self, owner):
+        self._x("DELETE FROM avatars WHERE owner=?", (owner,))
 
     # -- messages -----------------------------------------------------------
     _M = ("SELECT id, conv, sender_id, kind, text, ts, status, "

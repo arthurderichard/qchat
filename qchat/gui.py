@@ -4,8 +4,10 @@ import logging
 import os
 import pwd
 import shutil
+import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import gi
 
@@ -14,13 +16,13 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import netutil  # noqa: E402
-from .core import DEFAULT_PORT, Core, sniff_mime  # noqa: E402
+from . import gifs, netutil  # noqa: E402
+from .core import DEFAULT_PORT, MAX_AVATAR, Core, sniff_mime  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
 from .notify import Notifier  # noqa: E402
 from .theme import MODES, ThemeManager  # noqa: E402
-from .viewer import AnimatedImage, Viewer, fit, load_animation, viewable_kind  # noqa: E402
+from .viewer import AnimatedImage, Viewer, cover, fit, load_animation, viewable_kind  # noqa: E402
 from .viewer import human_size as _human_size  # noqa: E402
 
 log = logging.getLogger("qchat")
@@ -69,22 +71,55 @@ def _initials(name):
     return letters.upper()
 
 
-def _avatar(name, small=False, online=False, peer=False):
-    """Pastille ronde à initiales, avec un point vert de présence."""
-    lbl = _label(_initials(name), "avatar", xalign=0.5)
+def _avatar(name, small=False, online=False, peer=False, image=None, large=False):
+    """Pastille ronde : photo si ``image`` (chemin) est fourni, sinon initiales ; point vert de présence."""
+    lbl = _label("" if image else _initials(name), "avatar", xalign=0.5)
     ctx = lbl.get_style_context()
     if small:
         ctx.add_class("small")
+    if large:
+        ctx.add_class("large")
     if peer:
         ctx.add_class("peer")
+    if image:
+        ctx.add_class("photo")
+        css = Gtk.CssProvider()
+        uri = Gio.File.new_for_path(image).get_uri().replace('"', "%22")
+        css.load_from_data(f'label {{ background-image: url("{uri}"); }}'.encode())
+        ctx.add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
     lbl.set_valign(Gtk.Align.CENTER)
     overlay = Gtk.Overlay(valign=Gtk.Align.CENTER)
     overlay.add(lbl)
     if online:
         dot = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.END)
+        if large:
+            dot.set_margin_end(6)
+            dot.set_margin_bottom(6)
         dot.get_style_context().add_class("presence")
         overlay.add_overlay(dot)
     return overlay
+
+
+def uuid_hex():
+    return os.urandom(8).hex()
+
+
+def _animation_from_bytes(data):
+    """(animation, pixbuf fixe) décodés depuis des octets ; animation None si l'image est fixe."""
+    loader = GdkPixbuf.PixbufLoader()
+    try:
+        loader.write(data)
+        loader.close()
+    except GLib.Error:
+        return None, None
+    anim = loader.get_animation()
+    if anim is None:
+        return None, loader.get_pixbuf()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        static = anim.is_static_image()
+    return (None, anim.get_static_image()) if static else (anim, None)
 
 
 def _confirm(parent, text, secondary, action_label, destructive=True):
@@ -129,11 +164,11 @@ def _scrolled(child, height):
 class ConvRow(Gtk.ListBoxRow):
     """Ligne façon messagerie : avatar, nom, heure, aperçu du dernier message, non-lus."""
 
-    def __init__(self, section, key, name, subtitle, when="", online=False, unread=0, warn=False):
+    def __init__(self, section, key, name, subtitle, when="", online=False, unread=0, warn=False, image=None):
         super().__init__()
         self.section, self.key = section, key
         box = Gtk.Box(spacing=10, margin=7, margin_start=8, margin_end=10)
-        box.pack_start(_avatar(name, online=online, peer=section == "peer"), False, False, 0)
+        box.pack_start(_avatar(name, online=online, peer=section == "peer", image=image), False, False, 0)
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
         top = Gtk.Box(spacing=6)
         title = _label(name)
@@ -311,6 +346,13 @@ class MainWindow(Gtk.ApplicationWindow):
         attach.get_style_context().add_class("round")
         attach.connect("clicked", lambda _b: self._pick_files())
         composer.pack_start(attach, False, False, 0)
+        self.gif_btn = Gtk.MenuButton(label="GIF", tooltip_text="Envoyer un GIF")
+        self.gif_btn.set_valign(Gtk.Align.END)
+        for c in ("round", "gif-btn"):
+            self.gif_btn.get_style_context().add_class(c)
+        self.gif_popover = GifPopover(self)
+        self.gif_btn.set_popover(self.gif_popover)
+        composer.pack_start(self.gif_btn, False, False, 0)
         self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
         self.input.set_left_margin(4)
         self.input.set_right_margin(4)
@@ -416,14 +458,16 @@ class MainWindow(Gtk.ApplicationWindow):
             m = last_msg(g.conv)
             n = len(store.group_member_ids(g.gid)) + 1
             self.sidebar.add(ConvRow("group", g.conv, g.name, self._preview(m) if m else f"{n} membres",
-                                     when=_short_time(m.ts) if m else "", unread=unread))
+                                     when=_short_time(m.ts) if m else "", unread=unread,
+                                     image=self.core.avatar_path(g.conv)))
         for c in sorted(store.contacts(), key=lambda c: (-last_ts(c.conv), c.name.lower())):
             unread = store.unread_count(c.conv)
             total_unread += unread
             m = last_msg(c.conv)
             self.sidebar.add(ConvRow("contact", c.conv, c.name, self._contact_subtitle(c, m),
                                      when=_short_time(m.ts) if m else "", online=self.core.is_online(c.id),
-                                     unread=unread, warn=bool(c.pending_vk)))
+                                     unread=unread, warn=bool(c.pending_vk),
+                                     image=self.core.avatar_path(c.conv)))
         for vk, peer in sorted(self.core.discovered.items(), key=lambda kv: kv[1]["name"].lower()):
             self.sidebar.add(ConvRow("peer", vk, peer["name"], ", ".join(peer["ips"]), online=True))
         self.sidebar.show_all()
@@ -496,7 +540,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if kind == "g":
             g = self.core.store.get_group(ident)
             names = [self.core.store.get_contact(i).name for i in self.core.store.group_member_ids(ident)]
-            self.chat_avatar.add(_avatar(g.name, small=True))
+            self.chat_avatar.add(_avatar(g.name, small=True, image=self.core.avatar_path(g.conv)))
             self.chat_avatar.show_all()
             self.chat_title.set_text(g.name)
             self.chat_sub.set_text(f"{len(names) + 1} membres · Vous, "
@@ -504,7 +548,8 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             c = self.core.store.get_contact(int(ident))
             online = self.core.is_online(c.id)
-            self.chat_avatar.add(_avatar(c.name, small=True, online=online))
+            self.chat_avatar.add(_avatar(c.name, small=True, online=online,
+                                         image=self.core.avatar_path(c.conv)))
             self.chat_avatar.show_all()
             self.chat_title.set_text(c.name)
             if not c.vk:
@@ -842,9 +887,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self._send_files(chooser.get_filenames())
         chooser.destroy()
 
-    def _send_files(self, paths, cleanup=False):
+    def _send_files(self, paths, cleanup=False, conv=None):
         """Envoie en arrière-plan (la copie d'un gros fichier ne bloque pas l'interface)."""
-        conv = self.current
+        conv = conv or self.current
         if not conv or not paths:
             return
         self._stick_bottom = True
@@ -866,6 +911,27 @@ class MainWindow(Gtk.ApplicationWindow):
             if errors:
                 GLib.idle_add(lambda: self._error("Certains fichiers n'ont pas été envoyés",
                                                   "\n".join(errors)) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _send_gif(self, item):
+        """Télécharge le GIF choisi puis l'envoie comme une pièce jointe ordinaire."""
+        conv = self.current
+        if not conv:
+            return
+
+        def work():
+            try:
+                data = gifs.download(item["url"])
+            except gifs.GifError as e:
+                GLib.idle_add(lambda: self._error("Impossible d'envoyer le GIF", str(e)) and False)
+                return
+            tmp_dir = os.path.join(self.core.home, "tmp", uuid_hex())
+            os.makedirs(tmp_dir, mode=0o700, exist_ok=True)
+            path = os.path.join(tmp_dir, gifs.filename(item["title"]))
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+                f.write(data)
+            GLib.idle_add(lambda: self._send_files([path], cleanup=True, conv=conv) and False)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1169,7 +1235,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def identity_dialog(self):
         dlg, box = _dialog(self, "Mon identité", "Enregistrer")
+        dlg.get_style_context().add_class("qchat")
+        picker = AvatarPicker(dlg, self.core, self.core.name or "?", self.core.avatar_path("me"),
+                              "Votre photo est envoyée à tous vos contacts.")
+        box.pack_start(picker, False, False, 0)
         name = Gtk.Entry(text=self.core.name, activates_default=True)
+        name.connect("changed", lambda e: picker.set_name(e.get_text()))
         box.pack_start(_label("Nom affiché"), False, False, 0)
         box.pack_start(name, False, False, 0)
         box.pack_start(_label("Empreinte de ma clé (à comparer avec vos interlocuteurs)"), False, False, 0)
@@ -1180,10 +1251,318 @@ class MainWindow(Gtk.ApplicationWindow):
         box.pack_start(_label(f"Données : {self.core.home}", "subtitle", wrap=True, selectable=True),
                        False, False, 0)
         dlg.show_all()
-        if dlg.run() == Gtk.ResponseType.OK and name.get_text().strip():
-            self.core.set_name(name.get_text())
+        if dlg.run() == Gtk.ResponseType.OK:
+            if name.get_text().strip():
+                self.core.set_name(name.get_text())
+            if picker.choice is not None:
+                self.core.set_avatar(picker.choice or None)
             self.refresh_sidebar()
         dlg.destroy()
+
+
+def prepare_avatar(path, size=256):
+    """Lit une image, la recadre en carré centré, la réduit et la renvoie en JPEG (bytes).
+    Lève GLib.Error si le fichier n'est pas une image lisible."""
+    pb = GdkPixbuf.Pixbuf.new_from_file(path)
+    pb = pb.apply_embedded_orientation() or pb
+    w, h = pb.get_width(), pb.get_height()
+    side = min(w, h)
+    pb = pb.new_subpixbuf((w - side) // 2, (h - side) // 2, side, side)
+    for px, quality in ((size, 88), (size, 75), (192, 70), (160, 60)):
+        # Le JPEG n'a pas de transparence : on compose sur un fond blanc opaque (RGB sans alpha).
+        img = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, px, px)
+        img.fill(0xFFFFFFFF)
+        pb.composite(img, 0, 0, px, px, 0, 0, px / side, px / side, GdkPixbuf.InterpType.HYPER, 255)
+        ok, data = img.save_to_bufferv("jpeg", ["quality"], [str(quality)])
+        if ok and len(data) <= MAX_AVATAR:
+            return bytes(data)
+    raise GLib.Error("Image trop complexe pour être utilisée comme photo.")
+
+
+class AvatarPicker(Gtk.Box):
+    """Aperçu rond + « Choisir une photo… » / « Retirer ». ``choice`` : None (inchangée),
+    b"" (retirée) ou les octets de la nouvelle photo."""
+
+    def __init__(self, dialog, core, name, current, hint):
+        super().__init__(spacing=14, margin_bottom=6)
+        self.dialog, self.core, self.name = dialog, core, name
+        self.current = current
+        self.choice = None
+        self._preview = None
+        self.slot = Gtk.Box(valign=Gtk.Align.CENTER)
+        self.pack_start(self.slot, False, False, 0)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+        buttons = Gtk.Box(spacing=6)
+        choose = Gtk.Button(label="Choisir une photo…")
+        choose.connect("clicked", lambda _b: self._choose())
+        buttons.pack_start(choose, False, False, 0)
+        self.remove_btn = Gtk.Button(label="Retirer")
+        self.remove_btn.connect("clicked", lambda _b: self._set(b""))
+        buttons.pack_start(self.remove_btn, False, False, 0)
+        side.pack_start(buttons, False, False, 0)
+        side.pack_start(_label(hint, "subtitle", wrap=True), False, False, 0)
+        self.pack_start(side, True, True, 0)
+        self.connect("destroy", lambda *_a: self._cleanup())
+        self._render()
+
+    def set_name(self, name):
+        self.name = name.strip() or "?"
+        self._render()
+
+    def _image(self):
+        if self.choice is None:
+            return self.current
+        return self._preview if self.choice else None
+
+    def _render(self):
+        for child in self.slot.get_children():
+            self.slot.remove(child)
+        self.slot.add(_avatar(self.name, large=True, image=self._image()))
+        self.slot.show_all()
+        self.remove_btn.set_sensitive(self._image() is not None)
+
+    def _cleanup(self):
+        if self._preview:
+            try:
+                os.unlink(self._preview)
+            except OSError:
+                pass
+            self._preview = None
+
+    def _set(self, data):
+        self._cleanup()
+        self.choice = data
+        if data:
+            tmp_dir = os.path.join(self.core.home, "tmp")
+            os.makedirs(tmp_dir, mode=0o700, exist_ok=True)
+            fd, self._preview = tempfile.mkstemp(suffix=".jpg", dir=tmp_dir)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        self._render()
+
+    def _choose(self):
+        chooser = Gtk.FileChooserNative(title="Choisir une photo", transient_for=self.dialog,
+                                        action=Gtk.FileChooserAction.OPEN, accept_label="Choisir")
+        flt = Gtk.FileFilter()
+        flt.set_name("Images")
+        flt.add_pixbuf_formats()
+        chooser.add_filter(flt)
+        pictures = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES)
+        if pictures:
+            chooser.set_current_folder(pictures)
+        path = chooser.get_filename() if chooser.run() == Gtk.ResponseType.ACCEPT else None
+        chooser.destroy()
+        if not path:
+            return
+        try:
+            self._set(prepare_avatar(path))
+        except GLib.Error as e:
+            dlg = Gtk.MessageDialog(transient_for=self.dialog, modal=True,
+                                    message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.CLOSE,
+                                    text="Impossible d'utiliser cette image")
+            dlg.format_secondary_text(e.message)
+            dlg.run()
+            dlg.destroy()
+
+
+class GifPopover(Gtk.Popover):
+    """Sélecteur de GIF (KLIPY) : tendances au départ, recherche au fil de la frappe, clic pour envoyer.
+    Les vignettes sont des images fixes légères, animées au survol."""
+
+    COLS = 3
+    CELL = 118
+    CELL_H = 92
+
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.core = win, win.core
+        self.get_style_context().add_class("gif-popover")
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="qchat-gifs")
+        self._gen = 0              # résultats d'une recherche périmée ignorés
+        self._timer = None
+        self._query = None
+        self._page = 1
+        self._loading = False
+        self._has_next = False
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
+        box.set_size_request(self.COLS * (self.CELL + 6) + 30, 430)
+        self.search = Gtk.SearchEntry(placeholder_text="Rechercher sur KLIPY")
+        self.search.connect("search-changed", lambda _e: self._schedule_search())
+        self.search.connect("activate", lambda _e: self._send_first())
+        box.pack_start(self.search, False, False, 0)
+        self.flow = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
+                                min_children_per_line=self.COLS, max_children_per_line=self.COLS,
+                                column_spacing=4, row_spacing=4, valign=Gtk.Align.START)
+        self.flow.connect("child-activated", lambda _f, child: self._choose(child.item))
+        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.scroll.add(self.flow)
+        self.scroll.connect("edge-reached", lambda _s, pos: pos == Gtk.PositionType.BOTTOM
+                            and self._load_more())
+        overlay = Gtk.Overlay()
+        overlay.add(self.scroll)
+        self.status = _label("", "subtitle", xalign=0.5, wrap=True)
+        self.status.set_halign(Gtk.Align.CENTER)
+        self.status.set_valign(Gtk.Align.CENTER)
+        self.status.set_max_width_chars(36)
+        self.status.set_no_show_all(True)
+        overlay.add_overlay(self.status)
+        overlay.set_overlay_pass_through(self.status, True)
+        box.pack_start(overlay, True, True, 0)
+        box.pack_start(_label("Propulsé par KLIPY", "gif-credit", xalign=1.0), False, False, 0)
+        self.add(box)
+        box.show_all()
+        self.connect("show", lambda *_a: self._on_show())
+        win.connect("destroy", lambda *_a: self._pool.shutdown(wait=False, cancel_futures=True))
+
+    @property
+    def customer_id(self):
+        """Identifiant anonyme et aléatoire de ce poste, demandé par KLIPY (aucune donnée personnelle)."""
+        cid = self.core.store.get_setting("gif_customer_id", "")
+        if not cid:
+            cid = uuid_hex() + uuid_hex()
+            self.core.store.set_setting("gif_customer_id", cid)
+        return cid
+
+    # -- recherche -------------------------------------------------------------
+    def _on_show(self):
+        self.search.grab_focus()
+        if self._query is None or not self.flow.get_children():
+            self._run_search()
+
+    def _schedule_search(self):
+        if self._timer:
+            GLib.source_remove(self._timer)
+        self._timer = GLib.timeout_add(350, self._run_search)
+
+    def _clear(self):
+        self._gen += 1
+        for child in self.flow.get_children():
+            self.flow.remove(child)
+            child.destroy()
+
+    def _set_status(self, text):
+        self.status.set_text(text)
+        self.status.set_visible(bool(text))
+
+    def _run_search(self):
+        self._timer = None
+        self._query = self.search.get_text().strip()
+        self._page = 1
+        self._has_next = False
+        self._clear()
+        self.scroll.get_vadjustment().set_value(0)
+        self._fetch()
+        return False
+
+    def _load_more(self):
+        if not self._loading and self._has_next and self.flow.get_children():
+            self._fetch()
+
+    def _fetch(self):
+        gen, query, page, customer = self._gen, self._query, self._page, self.customer_id
+        self._loading = True
+        if page == 1:
+            self._set_status("Chargement…")
+
+        def work():
+            try:
+                (results, has_next), error = gifs.search(query, page, customer), None
+            except gifs.GifError as e:
+                results, has_next, error = [], False, str(e)
+            GLib.idle_add(lambda: self._on_results(gen, results, has_next, error) and False)
+
+        self._pool.submit(work)
+
+    def _on_results(self, gen, results, has_next, error):
+        if gen != self._gen:
+            return
+        self._loading = False
+        if error:
+            self._set_status(error)
+            return
+        self._page += 1
+        self._has_next = has_next
+        if not results and not self.flow.get_children():
+            self._set_status(f"Aucun GIF pour « {self._query} »." if self._query else "Aucun GIF.")
+            return
+        self._set_status("")
+        for item in results:
+            self._add_cell(gen, item)
+
+    # -- vignettes -------------------------------------------------------------
+    def _size(self, _item):
+        return self.CELL, self.CELL_H
+
+    def _add_cell(self, gen, item):
+        w, h = self._size(item)
+        child = Gtk.FlowBoxChild()
+        child.item = item
+        child.set_tooltip_text(item["title"])
+        ev = Gtk.EventBox(halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
+        ev.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        frame = Gtk.Stack()          # « still » : image fixe ; « anim » : GIF animé (au survol)
+        frame.set_size_request(w, h)
+        frame.get_style_context().add_class("gif-cell")
+        ev.add(frame)
+        child.add(ev)
+        self.flow.add(child)
+        child.show_all()
+        ev.connect("enter-notify-event", lambda *_a: self._animate(gen, item, frame))
+        ev.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
+                   or frame.get_child_by_name("still") is None
+                   or frame.set_visible_child_name("still"))
+        url, kind = (item["still"], "image") if item["still"] else (item["preview"], "gif")
+
+        def work():
+            try:
+                data = gifs.download(url, gifs.MAX_PREVIEW, kind=kind)
+            except gifs.GifError:
+                return
+            GLib.idle_add(lambda: self._put(gen, frame, data, w, h, "still") and False)
+
+        self._pool.submit(work)
+
+    def _put(self, gen, frame, data, w, h, name):
+        if gen != self._gen or frame.get_parent() is None or frame.get_child_by_name(name):
+            return
+        anim, still = _animation_from_bytes(data)
+        if anim:
+            img = AnimatedImage(anim, None, transform=lambda pb: cover(pb, w, h))
+        elif still:
+            img = Gtk.Image.new_from_pixbuf(cover(still, w, h))
+        else:
+            return
+        frame.add_named(img, name)
+        img.show()
+        if name == "anim" or frame.get_child_by_name("anim") is None:
+            frame.set_visible_child_name(name)
+
+    def _animate(self, gen, item, frame):
+        if frame.get_child_by_name("anim"):
+            frame.set_visible_child_name("anim")
+            return
+        if not item["preview"] or getattr(frame, "loading", False):
+            return
+        frame.loading = True
+        w, h = self._size(item)
+
+        def work():
+            try:
+                data = gifs.download(item["preview"], gifs.MAX_PREVIEW)
+            except gifs.GifError:
+                return
+            GLib.idle_add(lambda: self._put(gen, frame, data, w, h, "anim") and False)
+
+        self._pool.submit(work)
+
+    def _send_first(self):
+        children = self.flow.get_children()
+        if children:
+            self._choose(children[0].item)
+
+    def _choose(self, item):
+        self.popdown()
+        self.win._send_gif(item)
 
 
 class MemberPicker(Gtk.ScrolledWindow):
@@ -1456,8 +1835,13 @@ class GroupDialog:
     def run_dialog(self):
         g = self.core.store.get_group(self.gid)
         dlg, box = _dialog(self.win, "Groupe", "Enregistrer")
+        dlg.get_style_context().add_class("qchat")
         self.dlg = dlg
+        picker = AvatarPicker(dlg, self.core, g.name, self.core.avatar_path(g.conv),
+                              "La photo du groupe est visible par tous ses membres.")
+        box.pack_start(picker, False, False, 0)
         name = Gtk.Entry(text=g.name, activates_default=True)
+        name.connect("changed", lambda e: picker.set_name(e.get_text()))
         box.pack_start(_label("Nom du groupe"), False, False, 0)
         box.pack_start(name, False, False, 0)
         box.pack_start(_label("Membres"), False, False, 0)
@@ -1475,6 +1859,8 @@ class GroupDialog:
         if dlg.run() == Gtk.ResponseType.OK and self.core.store.get_group(self.gid):
             if name.get_text().strip() and name.get_text() != g.name:
                 self.core.rename_group(self.gid, name.get_text())
+            if picker.choice is not None:
+                self.core.set_group_avatar(self.gid, picker.choice or None)
         dlg.destroy()
 
     def _fill(self):
