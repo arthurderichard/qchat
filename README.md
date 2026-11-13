@@ -14,6 +14,7 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
 - **Photos de profil et de groupe**, synchronisées chez tous vos contacts.
 - **GIF** : recherche et envoi de GIF depuis la barre de message, sans rien configurer (KLIPY).
+- **Wizz** : `/wizz` (ou `/poke`) fait surgir chez le destinataire une fenêtre animée et sonore.
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
@@ -145,6 +146,13 @@ contacts n'ont besoin ni d'Internet ni de rien d'autre. La recherche passe par l
 (api.klipy.com), avec le filtrage de contenu le plus strict ; c'est la seule fonction de QChat qui
 contacte Internet.
 
+**Wizz** : tapez `/wizz` (ou son alias `/poke`) puis Entrée. Chez le destinataire — dans un groupe, chez
+tous les membres — une fenêtre surgit au milieu de l'écran principal : elle tremble, l'avatar rebondit,
+« WIZZ ! » ondule en arc-en-ciel au son d'un bzzz. *Répondre* ouvre la conversation ; elle se ferme seule
+après quelques secondes. Anti-spam : un wizz ou poke toutes les 30 s au plus, toutes conversations confondues (et pas plus d'une fenêtre par contact toutes les 30 s à la réception) ; un wizz reçu plus de 2 min
+après son envoi (destinataire hors ligne) est simplement noté dans la conversation. Sous Wayland, c'est
+le bureau qui place la fenêtre (en général au centre de l'écran actif).
+
 **Images et fichiers** : bouton 📎, glisser-déposer n'importe où dans la fenêtre, ou Ctrl+V (fichiers copiés
 dans le gestionnaire de fichiers, ou capture d'écran — un aperçu demande confirmation). Les images
 s'affichent en miniature, et les GIF y sont animés ; chaque pièce jointe propose *Ouvrir*, *Enregistrer
@@ -202,6 +210,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/gui.py`     | interface GTK 3                                             |
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
 | `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
+| `qchat/wizz.py`    | fenêtre animée des wizz / poke et son bzzz                  |
 
 ## Publier une version
 

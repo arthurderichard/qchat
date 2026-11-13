@@ -24,6 +24,7 @@ from .notify import Notifier  # noqa: E402
 from .theme import MODES, ThemeManager  # noqa: E402
 from .viewer import AnimatedImage, Viewer, cover, fit, load_animation, viewable_kind  # noqa: E402
 from .viewer import human_size as _human_size  # noqa: E402
+from .wizz import WizzPopup, play_buzz, shake_widget  # noqa: E402
 
 log = logging.getLogger("qchat")
 
@@ -98,6 +99,9 @@ def _avatar(name, small=False, online=False, peer=False, image=None, large=False
         dot.get_style_context().add_class("presence")
         overlay.add_overlay(dot)
     return overlay
+
+
+WIZZ_COMMANDS = {"/wizz": "wizz", "/poke": "poke"}
 
 
 def uuid_hex():
@@ -1037,10 +1041,26 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.core.edit_text(self._editing, text)
                 self._cancel_edit()
             return
+        command = text.strip().lower()
+        if command in WIZZ_COMMANDS:
+            self._send_wizz(WIZZ_COMMANDS[command])
+            buf.set_text("")
+            return
         if text.strip():
             self._stick_bottom = True
             self.core.send_text(self.current, text)
             buf.set_text("")
+
+    def _send_wizz(self, kind):
+        wait = self.core.send_wizz(self.current, kind)
+        if wait:
+            note = _label(f"Patientez {wait} s avant d'envoyer un nouveau {kind}.", "system", xalign=0.5)
+            self._add_row(note, Gtk.Align.CENTER)
+            row = note.get_parent()
+            GLib.timeout_add(4000, lambda: row.get_parent() and row.destroy() and False)
+            return
+        self._stick_bottom = True
+        shake_widget(self.msg_scroll)
 
     # -- modification des messages --------------------------------------------
     def _start_edit(self, msg_id):
@@ -2008,6 +2028,22 @@ class QChatApp(Gtk.Application):
         if conv:
             win.open_conv(conv)
 
+    def _show_wizz(self, contact_id, conv, kind):
+        c = self.core.store.get_contact(contact_id)
+        if not c:
+            return
+        name = c.name
+        if conv.startswith("g:"):
+            g = self.core.store.get_group(conv[2:])
+            name = f"{c.name} ({g.name})" if g else c.name
+        popup = WizzPopup(name, kind, avatar=self.core.avatar_path(c.conv), initials=_initials(c.name),
+                          on_reply=lambda: self._on_notification_clicked(conv))
+        popup.set_application(self)
+        popup.popup()
+        play_buzz(os.path.join(GLib.get_user_cache_dir(), "qchat"))
+        if self.win:
+            self.win.set_urgency_hint(True)
+
     def _on_event(self, name, data):
         if self.win is None:
             self._ensure_window().hide()
@@ -2020,6 +2056,8 @@ class QChatApp(Gtk.Application):
             win.on_reaction(**data)
         elif name == "edited":
             win.on_edited(**data)
+        elif name == "wizz":
+            self._show_wizz(**data)
         elif name == "key_changed":
             c = self.core.store.get_contact(data["contact_id"])
             if c:

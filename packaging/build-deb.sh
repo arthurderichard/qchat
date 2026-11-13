@@ -81,8 +81,8 @@ Version: $VERSION
 Architecture: all
 Maintainer: $MAINTAINER
 Installed-Size: $(du -sk --exclude=DEBIAN "$ROOT" | cut -f1)
-Depends: python3 (>= 3.8), python3-gi, gir1.2-gtk-3.0, python3-nacl
-Recommends: librsvg2-common, poppler-utils, gir1.2-gtksource-4
+Depends: python3 (>= 3.8), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, python3-nacl
+Recommends: librsvg2-common, poppler-utils, gir1.2-gtksource-4, fonts-comic-neue
 Suggests: libnotify-bin
 Section: net
 Priority: optional

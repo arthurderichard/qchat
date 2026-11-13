@@ -39,6 +39,9 @@ RETRY_INTERVAL = 20
 ONLINE_TIMEOUT = 75
 MAX_AVATAR = 64 * 1024          # photo de profil ou de groupe (déjà réduite par l'interface)
 AVATAR_RETRY = 300              # délai avant de redemander une photo à un contact
+WIZZ_KINDS = ("wizz", "poke")
+WIZZ_COOLDOWN = 30              # anti-spam : un wizz/poke toutes les 30 s (envoi et affichage)
+WIZZ_MAX_AGE = 120              # un wizz reçu en retard (destinataire hors ligne) ne s'affiche plus
 ANNOUNCE_MAX_AGE = 15 * 60
 MAX_FRAME = 256 * 1024
 MAX_TEXT = 16000
@@ -236,6 +239,8 @@ class Core:
         self.avatars_dir = os.path.join(self.home, "avatars")
         os.makedirs(self.avatars_dir, mode=0o700, exist_ok=True)
         self._avatar_asked = {}   # contact_id -> (sha demandé, date)
+        self._wizz_sent = 0.0     # date de mon dernier wizz/poke, toutes conversations confondues
+        self._wizz_seen = {}      # contact_id -> date du dernier wizz affiché
         self.port = port
         self.discovery_enabled = discovery
         self.on_event = on_event or (lambda name, data: None)
@@ -702,6 +707,47 @@ class Core:
         self.request_flush(targets)
         return True
 
+    def send_wizz(self, conv, kind="wizz"):
+        """Envoie un wizz (ou un poke) : une fenêtre animée s'ouvre chez le destinataire.
+
+        Renvoie le nombre de secondes à attendre si le dernier wizz est trop récent, sinon 0.
+        """
+        kind = kind if kind in WIZZ_KINDS else "wizz"
+        now = time.time()
+        wait = self._wizz_sent + WIZZ_COOLDOWN - now
+        if wait > 0:
+            return max(1, int(wait + 0.999))
+        self._wizz_sent = now
+        payload = {"t": "wizz", "id": uuid.uuid4().hex, "ts": now, "kind": kind}
+        targets = self._targets(conv, payload)
+        for cid in targets:
+            self.store.enqueue(cid, payload)
+        self._system(conv, f"Vous avez envoyé un {kind}.")
+        self.request_flush(targets)
+        return 0
+
+    def _on_wizz(self, cid, obj):
+        kind, ts = obj.get("kind"), obj.get("ts")
+        if kind not in WIZZ_KINDS:
+            kind = "wizz"
+        gid = obj.get("gid")
+        if gid is not None:
+            if not isinstance(gid, str) or cid not in self.store.group_member_ids(gid):
+                return
+            conv = f"g:{gid}"
+        else:
+            conv = f"c:{cid}"
+        c = self.store.get_contact(cid)
+        if not c:
+            return
+        now = time.time()
+        fresh = (isinstance(ts, (int, float)) and not isinstance(ts, bool)
+                 and now - ts <= WIZZ_MAX_AGE)
+        self._system(conv, f"{c.name} vous a envoyé un {kind}.")
+        if fresh and now - self._wizz_seen.get(cid, 0) >= WIZZ_COOLDOWN:
+            self._wizz_seen[cid] = now
+            self._emit("wizz", contact_id=cid, conv=conv, kind=kind)
+
     def _delete_files(self, conv):
         for path in self.store.attachment_paths(conv):
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
@@ -1014,6 +1060,8 @@ class Core:
             self.request_flush([cid])
         elif t == "gavatar":
             self._on_group_avatar(cid, obj)
+        elif t == "wizz":
+            self._on_wizz(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")

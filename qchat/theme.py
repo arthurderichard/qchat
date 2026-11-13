@@ -133,6 +133,16 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .gif-btn label { padding: 0; }
 .gif-cell { background-color: alpha(#808080, 0.18); border-radius: 6px; }
 .gif-credit { font-size: smaller; font-weight: bold; opacity: 0.7; }
+window.wizz-popup, window.wizz-popup > * { background-color: transparent; background-image: none; }
+.wizz-reply { font-family: "Comic Sans MS", "Comic Neue", cursive; font-weight: bold; color: #ffffff;
+              background-image: linear-gradient(to bottom, #8fe86a, #2e9b2a); border: 2px solid #ffffff;
+              font-size: 15pt; border-radius: 999px; padding: 6px 30px; box-shadow: 0 2px 4px alpha(#000000, 0.35);
+              text-shadow: 0 1px 1px alpha(#000000, 0.5); }
+.wizz-reply:hover { background-image: linear-gradient(to bottom, #a6f584, #38b333); }
+.wizz-close { background-image: none; background-color: alpha(#ffffff, 0.6); color: #333344;
+              border: none; box-shadow: none; border-radius: 999px; min-width: 34px; min-height: 34px;
+              padding: 0; font-size: 13pt; }
+.wizz-close:hover { background-color: #ffffff; }
 .qchat .round { background-image: none; background-color: transparent; border: none;
                 box-shadow: none; border-radius: 999px; min-width: 34px; min-height: 34px;
                 padding: 0; color: $muted; }

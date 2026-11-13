@@ -330,6 +330,38 @@ class CoreTest(unittest.TestCase):
         time.sleep(1)
         self.assertEqual(self._reactions(self.a, msg.id), [("✅", "Chloé")])
 
+    def test_wizz_direct_cooldown_and_stale(self):
+        cid = self.add(self.a, self.b)
+        self.assertEqual(self.a.core.send_wizz(f"c:{cid}", "poke"), 0)
+        self.assertGreater(self.a.core.send_wizz(f"c:{cid}"), 0)      # anti-spam
+        wizz = lambda: [d for n, d in self.b.events if n == "wizz"]   # noqa: E731
+        self.assertTrue(wait_for(lambda: len(wizz()) == 1))
+        a_on_b = self.b.contact(self.a)
+        self.assertEqual(wizz()[0], {"contact_id": a_on_b.id, "conv": a_on_b.conv, "kind": "poke"})
+        system = lambda n, conv: [m.text for m in n.core.store.messages(conv) if m.kind == "system"]  # noqa: E731
+        self.assertIn("Vous avez envoyé un poke.", system(self.a, f"c:{cid}"))
+        self.assertTrue(wait_for(lambda: "Alice vous a envoyé un poke." in system(self.b, a_on_b.conv)))
+        # Un wizz arrivé longtemps après (destinataire hors ligne) est noté mais ne surgit pas
+        self.b.core._wizz_seen.clear()
+        self.a.core.store.enqueue(cid, {"t": "wizz", "id": "w-old", "ts": time.time() - 3600,
+                                        "kind": "wizz"})
+        self.a.core.request_flush([cid])
+        self.assertTrue(wait_for(lambda: "Alice vous a envoyé un wizz." in system(self.b, a_on_b.conv)))
+        self.assertEqual(len(wizz()), 1)
+
+    def test_wizz_group(self):
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid, c_cid])
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_group(gid) for n in (self.b, self.c))))
+        self.assertEqual(self.a.core.send_wizz(f"g:{gid}"), 0)
+        # anti-spam global : 30 s avant un nouveau wizz, même vers une autre conversation
+        wait = self.a.core.send_wizz(f"c:{b_cid}")
+        self.assertTrue(25 <= wait <= 30, wait)
+        for node in (self.b, self.c):
+            self.assertTrue(wait_for(lambda: any(n == "wizz" and d["conv"] == f"g:{gid}"
+                                                 for n, d in node.events)))
+
     def test_edit_direct_keeps_history(self):
         cid = self.add(self.a, self.b)
         msg = self.a.core.send_text(f"c:{cid}", "Réunion à 14 h")
