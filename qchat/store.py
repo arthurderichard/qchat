@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS reactions (
     ts REAL NOT NULL,
     PRIMARY KEY (msg_id, reactor, emoji)
 );
+CREATE TABLE IF NOT EXISTS message_edits (
+    msg_id TEXT NOT NULL,
+    text TEXT NOT NULL,             -- version remplacée
+    ts REAL NOT NULL,               -- date de la modification qui l'a remplacée
+    PRIMARY KEY (msg_id, ts)
+);
 CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -116,6 +122,7 @@ class Message:
     text: str
     ts: float
     status: str
+    edited: float = None        # date de la dernière modification, None si jamais modifié
 
     @property
     def outgoing(self):
@@ -197,6 +204,7 @@ class Store:
 
     def _delete_conv_messages(self, conv):
         self._x("DELETE FROM reactions WHERE msg_id IN (SELECT id FROM messages WHERE conv=?)", (conv,))
+        self._x("DELETE FROM message_edits WHERE msg_id IN (SELECT id FROM messages WHERE conv=?)", (conv,))
         self._x("DELETE FROM messages WHERE conv=?", (conv,))
 
     def delete_contact(self, cid):
@@ -275,7 +283,8 @@ class Store:
             self._x("DELETE FROM groups WHERE gid=?", (gid,))
 
     # -- messages -----------------------------------------------------------
-    _M = "SELECT id, conv, sender_id, kind, text, ts, status FROM messages"
+    _M = ("SELECT id, conv, sender_id, kind, text, ts, status, "
+          "(SELECT MAX(e.ts) FROM message_edits e WHERE e.msg_id = messages.id) FROM messages")
 
     def add_message(self, msg_id, conv, sender_id, text, ts, status, kind="text", unread=False):
         """Insère un message ; renvoie None si déjà connu (doublon)."""
@@ -306,6 +315,32 @@ class Store:
 
     def mark_read(self, conv):
         self._x("UPDATE messages SET unread=0 WHERE conv=? AND unread=1", (conv,))
+
+    # -- modifications ----------------------------------------------------------
+    def edit_message(self, msg_id, text, ts):
+        """Remplace le texte d'un message en archivant l'ancien ; renvoie True si appliqué.
+        Une modification plus ancienne que la dernière connue est ignorée."""
+        with self._lock:
+            m = self.get_message(msg_id)
+            if not m or m.text == text or (m.edited is not None and ts <= m.edited):
+                return False
+            try:
+                self._x("INSERT INTO message_edits VALUES (?, ?, ?)", (msg_id, m.text, ts))
+            except sqlite3.IntegrityError:
+                return False
+            self._x("UPDATE messages SET text=? WHERE id=?", (text, msg_id))
+            return True
+
+    def message_history(self, msg_id):
+        """Versions successives du message, de l'originale à l'actuelle : [(texte, date)].
+        La date est celle de l'envoi pour l'originale, puis celle de chaque modification."""
+        m = self.get_message(msg_id)
+        if not m:
+            return []
+        rows = self._q("SELECT text, ts FROM message_edits WHERE msg_id=? ORDER BY ts", (msg_id,))
+        dates = [m.ts] + [ts for _t, ts in rows]
+        texts = [t for t, _ts in rows] + [m.text]
+        return list(zip(texts, dates))
 
     # -- réactions ---------------------------------------------------------------
     def set_reaction(self, msg_id, reactor, emoji, on):

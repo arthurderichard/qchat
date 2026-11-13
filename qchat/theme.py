@@ -86,6 +86,8 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .chat-area, .qchat .chat-area list, .qchat .chat-area row,
 .qchat .empty-page, .qchat .composer-area { background-color: $chat_bg; }
 .qchat .chat-area row, .qchat .chat-area row:hover { background-color: transparent; }
+/* Espacement en padding : une marge GTK laissait une bande noire non peinte sous les messages. */
+.qchat .chat-area list { padding: 6px 0; }
 
 .qchat .bubble { padding: 7px 12px 5px 12px; border-radius: 16px; box-shadow: 0 1px 1px $shadow; }
 .qchat .bubble.in { background-color: $in_bg; color: $in_fg; border-bottom-left-radius: 4px; }
@@ -103,6 +105,15 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .reaction:hover { border-color: $accent; }
 .qchat .reaction.mine { background-color: $accent; color: #ffffff; }
 .qchat .react-btn { padding: 2px; min-height: 0; min-width: 0; color: $muted; }
+.qchat .meta link { color: $muted; }
+.qchat .bubble.out .meta link { color: $out_meta; }
+.qchat .edit-bar { background-color: $input_bg; border-radius: 14px; padding: 2px 4px 2px 14px;
+                   margin-bottom: 6px; border-left: 3px solid $accent; box-shadow: 0 1px 2px $shadow; }
+.qchat .edit-bar .edit-title { color: $accent; font-weight: bold; font-size: smaller; }
+.qchat .history-version { background-color: $in_bg; color: $in_fg; border-radius: 12px;
+                          padding: 8px 12px; margin-bottom: 8px; }
+.qchat .history-version.current { background-color: $out_bg; color: $out_fg; }
+.qchat .history-version.current .meta { color: $out_meta; }
 
 .qchat .composer-area { padding: 6px 16px 14px 16px; }
 .qchat .composer { background-color: $input_bg; border-radius: 22px; padding: 3px 5px;
@@ -110,6 +121,11 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .composer scrolledwindow, .qchat .composer textview,
 .qchat .composer textview text { background-color: transparent; border: none; color: $fg; }
 .qchat .composer .placeholder { color: $muted; }
+/* La barre de défilement (invisible tant qu'une ligne suffit) imposait une hauteur minimale de 46 px :
+   le texte se retrouvait en haut et les boutons en bas. */
+.qchat .composer scrollbar, .qchat .composer scrollbar slider,
+.qchat .composer scrollbar button { min-height: 0; }
+.qchat .composer .round { min-width: 36px; min-height: 36px; }
 .qchat .round { background-image: none; background-color: transparent; border: none;
                 box-shadow: none; border-radius: 999px; min-width: 34px; min-height: 34px;
                 padding: 0; color: $muted; }
@@ -120,6 +136,10 @@ window.qchat { background-color: $bg; color: $fg; }
 
 .qchat .drop-hint { background-color: alpha($bg, 0.94); color: $fg; border: 2px dashed $accent;
                     border-radius: 14px; padding: 24px 36px; font-size: larger; font-weight: bold; }
+.qchat .viewer-area, .qchat .viewer-area viewport { background-color: $chat_bg; }
+.qchat .pdf-page { background-color: #ffffff; box-shadow: 0 1px 4px $shadow; }
+.qchat .viewer-note { background-color: $chip_bg; color: $chip_fg; padding: 6px 12px; }
+.qchat .zoom-label { min-width: 64px; }
 .qchat .empty-title { font-weight: bold; font-size: larger; color: $fg; }
 """)
 

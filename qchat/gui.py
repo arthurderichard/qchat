@@ -20,6 +20,8 @@ from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
 from .notify import Notifier  # noqa: E402
 from .theme import MODES, ThemeManager  # noqa: E402
+from .viewer import AnimatedImage, Viewer, fit, load_animation, viewable_kind  # noqa: E402
+from .viewer import human_size as _human_size  # noqa: E402
 
 log = logging.getLogger("qchat")
 
@@ -83,13 +85,6 @@ def _avatar(name, small=False, online=False, peer=False):
         dot.get_style_context().add_class("presence")
         overlay.add_overlay(dot)
     return overlay
-
-
-def _human_size(n):
-    for unit in ("octets", "Ko", "Mo", "Go"):
-        if n < 1024 or unit == "Go":
-            return f"{n} {unit}" if unit == "octets" else f"{n:.1f} {unit}".replace(".", ",")
-        n /= 1024
 
 
 def _confirm(parent, text, secondary, action_label, destructive=True):
@@ -175,6 +170,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.current = None          # conv affichée ('c:<id>' / 'g:<gid>')
         self._status_labels = {}     # msg_id -> label méta (conversation affichée)
         self._reaction_boxes = {}    # msg_id -> boîte des réactions (conversation affichée)
+        self._text_labels = {}       # msg_id -> (texte, méta) des bulles affichées
+        self._editing = None         # msg_id du message en cours de modification
+        self._viewer = None          # visionneuse de pièces jointes ouverte
         self._last_day = None
         self._stick_bottom = True
         self.set_default_size(980, 640)
@@ -278,8 +276,6 @@ class MainWindow(Gtk.ApplicationWindow):
         chat.pack_start(self.infobar, False, False, 0)
 
         self.msg_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        self.msg_list.set_margin_top(6)
-        self.msg_list.set_margin_bottom(6)
         self.msg_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.msg_scroll.get_style_context().add_class("chat-area")
         self.msg_scroll.add(self.msg_list)
@@ -289,8 +285,23 @@ class MainWindow(Gtk.ApplicationWindow):
         chat.pack_start(self.msg_scroll, True, True, 0)
 
         # Barre de saisie flottante : 📎 | texte | envoyer
-        area = Gtk.Box()
+        area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         area.get_style_context().add_class("composer-area")
+        self.edit_bar = Gtk.Box(spacing=6, no_show_all=True)
+        self.edit_bar.get_style_context().add_class("edit-bar")
+        edit_texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        edit_texts.pack_start(_label("✏ Modification du message", "edit-title"), False, False, 0)
+        self.edit_orig = _label("", "subtitle")
+        self.edit_orig.set_ellipsize(Pango.EllipsizeMode.END)
+        edit_texts.pack_start(self.edit_orig, False, False, 0)
+        self.edit_bar.pack_start(edit_texts, True, True, 0)
+        edit_cancel = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON)
+        edit_cancel.set_tooltip_text("Annuler la modification (Échap)")
+        edit_cancel.set_valign(Gtk.Align.CENTER)
+        edit_cancel.get_style_context().add_class("round")
+        edit_cancel.connect("clicked", lambda _b: self._cancel_edit())
+        self.edit_bar.pack_start(edit_cancel, False, False, 0)
+        area.pack_start(self.edit_bar, False, False, 0)
         composer = Gtk.Box(spacing=2)
         composer.get_style_context().add_class("composer")
         attach = Gtk.Button.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON)
@@ -310,6 +321,7 @@ class MainWindow(Gtk.ApplicationWindow):
         in_scroll.set_propagate_natural_height(True)
         in_scroll.set_max_content_height(140)
         in_scroll.add(self.input)
+        in_scroll.set_valign(Gtk.Align.CENTER)    # une seule ligne : centrée entre 📎 et envoyer
         placeholder = _label("Écrire un message…", "placeholder")
         placeholder.set_margin_start(5)
         placeholder.set_halign(Gtk.Align.START)
@@ -456,6 +468,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.current = conv
         self._status_labels.clear()
         self._reaction_boxes.clear()
+        self._text_labels.clear()
+        self._cancel_edit()
         self._last_day = None
         for row in self.msg_list.get_children():
             self.msg_list.remove(row)
@@ -479,7 +493,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.infobar.hide()
         for child in self.chat_avatar.get_children():
             self.chat_avatar.remove(child)
-        esc = GLib.markup_escape_text
         if kind == "g":
             g = self.core.store.get_group(ident)
             names = [self.core.store.get_contact(i).name for i in self.core.store.group_member_ids(ident)]
@@ -494,14 +507,13 @@ class MainWindow(Gtk.ApplicationWindow):
             self.chat_avatar.add(_avatar(c.name, small=True, online=online))
             self.chat_avatar.show_all()
             self.chat_title.set_text(c.name)
-            ips = esc(", ".join(self.core.store.ips(c.id)))
             if not c.vk:
                 state = "jamais joint — les messages partiront dès qu'il sera joignable"
             elif online:
                 state = f"<span foreground='{self.app.theme.palette['accent']}'>en ligne</span>"
             else:
                 state = "hors ligne"
-            self.chat_sub.set_markup(f"{state} · {ips}")
+            self.chat_sub.set_markup(state)
             if c.pending_vk:
                 self.infobar_label.set_text(
                     f"Une clé de sécurité différente a répondu à l'adresse {c.pending_ip} de {c.name}. "
@@ -539,10 +551,14 @@ class MainWindow(Gtk.ApplicationWindow):
             text.set_can_focus(False)
             bubble.pack_start(text, False, False, 0)
         meta = _label("", "meta", xalign=1.0)
-        self._set_meta(meta, m.ts, m.status if m.outgoing else None)
+        meta.set_track_visited_links(False)
+        meta.connect("activate-link", lambda _l, _uri, mid=m.id: self._show_history(mid) or True)
+        self._set_meta(meta, m)
         bubble.pack_start(meta, False, False, 0)
         if m.outgoing:
-            self._status_labels[m.id] = (meta, m.ts)
+            self._status_labels[m.id] = meta
+        if m.kind == "text":
+            self._text_labels[m.id] = (text, meta)
         self._add_row(self._with_reactions(m, bubble), Gtk.Align.END if m.outgoing else Gtk.Align.START)
 
     # -- réactions -------------------------------------------------------------
@@ -563,16 +579,28 @@ class MainWindow(Gtk.ApplicationWindow):
         btn.get_style_context().add_class("react-btn")
         btn.set_opacity(0)
         btn.connect("clicked", lambda b: self._react_popover(b, m.id))
+        tools = Gtk.Box(valign=Gtk.Align.CENTER)
+        tools.pack_start(btn, False, False, 0)
+        hover = [btn]
+        if m.outgoing and m.kind == "text":
+            edit = Gtk.Button.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.BUTTON)
+            edit.set_relief(Gtk.ReliefStyle.NONE)
+            edit.set_tooltip_text("Modifier")
+            edit.get_style_context().add_class("react-btn")
+            edit.set_opacity(0)
+            edit.connect("clicked", lambda _b: self._start_edit(m.id))
+            tools.pack_start(edit, False, False, 0)
+            hover.append(edit)
         line = Gtk.Box(spacing=2)
-        for child in ((btn, column) if m.outgoing else (column, btn)):
+        for child in ((tools, column) if m.outgoing else (column, tools)):
             line.pack_start(child, False, False, 0)
 
         ev = Gtk.EventBox()
         ev.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
         ev.add(line)
-        ev.connect("enter-notify-event", lambda *_a: btn.set_opacity(1))
+        ev.connect("enter-notify-event", lambda *_a: [b.set_opacity(1) for b in hover])
         ev.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
-                   or btn.set_opacity(0))
+                   or [b.set_opacity(0) for b in hover])
         ev.connect("button-press-event", lambda _w, e: e.button == 3 and self._react_popover(btn, m.id))
         return ev
 
@@ -607,8 +635,23 @@ class MainWindow(Gtk.ApplicationWindow):
             b.get_style_context().add_class("emoji-pick")
             b.connect("clicked", lambda _b, e=emoji: (self.core.react(msg_id, e), pop.popdown()))
             grid.attach(b, i % 6, i // 6, 1, 1)
-        pop.add(grid)
-        grid.show_all()
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.pack_start(grid, False, False, 0)
+        m = self.core.store.get_message(msg_id)
+        actions = []
+        if m and m.outgoing and m.kind == "text":
+            actions.append(("Modifier", self._start_edit))
+        if m and m.edited:
+            actions.append(("Historique des modifications",
+                            self._show_history))
+        if actions:
+            content.pack_start(Gtk.Separator(), False, False, 2)
+        for text, fn in actions:
+            row = Gtk.ModelButton(text=text, centered=False)
+            row.connect("clicked", lambda _b, fn=fn: (pop.popdown(), fn(msg_id)))
+            content.pack_start(row, False, False, 0)
+        pop.add(content)
+        content.show_all()
         pop.popup()
         return True
 
@@ -624,8 +667,10 @@ class MainWindow(Gtk.ApplicationWindow):
                                      f"à votre message : {m.text}", m.conv)
 
     @staticmethod
-    def _set_meta(label, ts, status):
-        txt = time.strftime("%H:%M", time.localtime(ts))
+    def _set_meta(label, m):
+        status = m.status if m.outgoing else None
+        txt = time.strftime("%H:%M", time.localtime(m.ts))
+        label.set_tooltip_text(None)
         if status == "pending":
             txt += "  🕓"
             label.set_tooltip_text("En attente : le destinataire n'est pas joignable")
@@ -635,7 +680,13 @@ class MainWindow(Gtk.ApplicationWindow):
         elif status == "failed":
             txt += "  ⚠"
             label.set_tooltip_text("Échec : le fichier à envoyer a disparu")
-        label.set_text(txt)
+        if not m.edited:
+            label.set_text(txt)
+            return
+        when = time.strftime("%d/%m à %H:%M", time.localtime(m.edited))
+        tip = f"Modifié le {when} — cliquez pour voir l'historique"
+        label.set_markup(f"<a href='history' title='{GLib.markup_escape_text(tip)}'>modifié</a>  "
+                         + GLib.markup_escape_text(txt))
 
     def _add_row(self, widget, halign):
         widget.set_halign(halign)
@@ -667,9 +718,13 @@ class MainWindow(Gtk.ApplicationWindow):
                                     and (sniff_mime(att.path) or "").startswith("image/"))
         thumb = self._thumbnail(att.path) if is_image and exists else None
         if thumb:
-            ev = Gtk.EventBox(tooltip_text=f"{att.name} — cliquer pour ouvrir")
-            ev.add(Gtk.Image.new_from_pixbuf(thumb))
-            ev.connect("button-press-event", lambda *_a: self._open_file(att.path) or True)
+            ev = Gtk.EventBox(tooltip_text=f"{att.name} — cliquer pour agrandir")
+            anim = load_animation(att.path)
+            if anim:        # GIF animé : l'aperçu s'anime dans la discussion
+                ev.add(AnimatedImage(anim, lambda w, h: fit(w, h, 320, 240)))
+            else:
+                ev.add(Gtk.Image.new_from_pixbuf(thumb))
+            ev.connect("button-press-event", lambda _w, e: e.button == 1 and self._view_file(m.id) or True)
             ev.connect("realize", lambda w: w.get_window().set_cursor(
                 Gdk.Cursor.new_from_name(w.get_display(), "pointer")))
             box.pack_start(ev, False, False, 0)
@@ -687,7 +742,7 @@ class MainWindow(Gtk.ApplicationWindow):
                          False, False, 0)
         row.pack_start(texts, True, True, 0)
         for icon_name, tip, action in (
-                ("document-open-symbolic", "Ouvrir", lambda: self._open_file(att.path)),
+                ("document-open-symbolic", "Ouvrir", lambda: self._view_file(m.id)),
                 ("document-save-as-symbolic", "Enregistrer sous…", lambda: self._save_file_as(att)),
                 ("folder-open-symbolic", "Afficher dans le dossier", lambda: self._show_in_folder(att.path))):
             btn = Gtk.Button.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
@@ -700,6 +755,31 @@ class MainWindow(Gtk.ApplicationWindow):
             row.pack_start(btn, False, False, 0)
         box.pack_start(row, False, False, 0)
         return box
+
+    # -- visionneuse -------------------------------------------------------------
+    def _view_file(self, msg_id):
+        """Ouvre la pièce jointe dans la visionneuse intégrée si son type s'y prête (image, PDF, texte),
+        sinon avec l'application par défaut. Les flèches parcourent les autres fichiers de la discussion."""
+        att = self.core.store.get_attachment(msg_id)
+        if not att or not os.path.isfile(att.path):
+            return
+        if not viewable_kind(att.path, att.mime):
+            self._open_file(att.path)
+            return
+        items, index = [], 0
+        for m in self.core.store.messages(self.current or "", limit=500):
+            a = self.core.store.get_attachment(m.id) if m.kind == "file" else None
+            if a and (a.msg_id == msg_id or os.path.isfile(a.path) and viewable_kind(a.path, a.mime)):
+                if a.msg_id == msg_id:
+                    index = len(items)
+                items.append({"path": a.path, "name": a.name, "mime": a.mime, "size": a.size, "att": a})
+        if not items:
+            items = [{"path": att.path, "name": att.name, "mime": att.mime, "size": att.size, "att": att}]
+        if self._viewer is None:
+            self._viewer = Viewer(self, self.app.theme.dark, lambda it: self._save_file_as(it["att"], self._viewer),
+                                  self._open_file)
+            self._viewer.connect("destroy", lambda *_a: setattr(self, "_viewer", None))
+        self._viewer.show_items(items, index)
 
     def _thumbnail(self, path):
         cache = self.__dict__.setdefault("_thumbs", {})
@@ -737,8 +817,8 @@ class MainWindow(Gtk.ApplicationWindow):
         except GLib.Error:
             self._open_file(os.path.dirname(path))
 
-    def _save_file_as(self, att):
-        chooser = Gtk.FileChooserNative(title="Enregistrer le fichier", transient_for=self,
+    def _save_file_as(self, att, parent=None):
+        chooser = Gtk.FileChooserNative(title="Enregistrer le fichier", transient_for=parent or self,
                                         action=Gtk.FileChooserAction.SAVE, accept_label="Enregistrer")
         chooser.set_current_name(att.name)
         chooser.set_do_overwrite_confirmation(True)
@@ -865,6 +945,16 @@ class MainWindow(Gtk.ApplicationWindow):
         if (event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_v, Gdk.KEY_V)
                 and self.current and self._paste()):
             return True
+        if event.keyval == Gdk.KEY_Escape and self._editing:
+            self._cancel_edit()
+            return True
+        buf = self.input.get_buffer()
+        if (event.keyval == Gdk.KEY_Up and not self._editing and self.current
+                and buf.get_char_count() == 0):
+            last = self._last_editable()
+            if last:
+                self._start_edit(last)
+                return True
         if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not (
                 event.state & Gdk.ModifierType.SHIFT_MASK):
             self._send()
@@ -876,10 +966,84 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         buf = self.input.get_buffer()
         text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        if self._editing:
+            if text.strip():
+                self.core.edit_text(self._editing, text)
+                self._cancel_edit()
+            return
         if text.strip():
             self._stick_bottom = True
             self.core.send_text(self.current, text)
             buf.set_text("")
+
+    # -- modification des messages --------------------------------------------
+    def _start_edit(self, msg_id):
+        m = self.core.store.get_message(msg_id)
+        if not m or not m.outgoing or m.kind != "text" or m.conv != self.current:
+            return
+        self._editing = msg_id
+        self.edit_orig.set_text(" ".join(m.text.split()))
+        self.edit_bar.set_no_show_all(False)
+        self.edit_bar.show_all()
+        buf = self.input.get_buffer()
+        buf.set_text(m.text)
+        buf.place_cursor(buf.get_end_iter())
+        self.input.grab_focus()
+
+    def _cancel_edit(self):
+        if self._editing is None:
+            return
+        self._editing = None
+        self.edit_bar.hide()
+        self.edit_bar.set_no_show_all(True)
+        self.input.get_buffer().set_text("")
+
+    def _last_editable(self):
+        for m in reversed(self.core.store.messages(self.current, limit=50)):
+            if m.outgoing and m.kind == "text":
+                return m.id
+        return None
+
+    def on_edited(self, msg_id, incoming=False):
+        m = self.core.store.get_message(msg_id)
+        entry = self._text_labels.get(msg_id)
+        if m and entry:
+            entry[0].set_text(m.text)
+            self._set_meta(entry[1], m)
+        self.refresh_sidebar()
+
+    def _show_history(self, msg_id):
+        history = self.core.store.message_history(msg_id)
+        if not history:
+            return
+        dlg, box = _dialog(self, "Historique des modifications")
+        dlg.set_default_size(440, -1)
+        dlg.get_style_context().add_class("qchat")
+        versions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        last = len(history) - 1
+        for i, (text, ts) in enumerate(reversed(history)):
+            n = last - i
+            what = "Version actuelle" if n == last else ("Original" if n == 0 else f"Version {n + 1}")
+            when = time.strftime("%d/%m/%Y à %H:%M", time.localtime(ts))
+            item = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            ctx = item.get_style_context()
+            ctx.add_class("history-version")
+            if n == last:
+                ctx.add_class("current")
+            verb = "envoyé" if n == 0 else "modifié"
+            item.pack_start(_label(f"{what} · {verb} le {when}", "meta"), False, False, 0)
+            body = _label(text, wrap=True, selectable=True)
+            body.set_max_width_chars(55)
+            body.set_can_focus(False)
+            item.pack_start(body, False, False, 0)
+            versions.pack_start(item, False, False, 0)
+        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        sw.set_propagate_natural_height(True)
+        sw.set_max_content_height(420)
+        sw.add(versions)
+        box.pack_start(sw, True, True, 0)
+        dlg.show_all()
+        dlg.connect("response", lambda d, _r: d.destroy())
 
     def _on_infobar(self, _bar, response):
         if not self.current or not self.current.startswith("c:"):
@@ -912,9 +1076,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.refresh_sidebar()
 
     def on_status(self, msg_id, status):
-        entry = self._status_labels.get(msg_id)
-        if entry:
-            self._set_meta(entry[0], entry[1], status)
+        meta = self._status_labels.get(msg_id)
+        m = self.core.store.get_message(msg_id) if meta else None
+        if m:
+            self._set_meta(meta, m)
 
     def _on_active_changed(self, *_a):
         if self.is_active():
@@ -1467,6 +1632,8 @@ class QChatApp(Gtk.Application):
             win.on_status(data["msg_id"], data["status"])
         elif name == "reaction":
             win.on_reaction(**data)
+        elif name == "edited":
+            win.on_edited(**data)
         elif name == "key_changed":
             c = self.core.store.get_contact(data["contact_id"])
             if c:

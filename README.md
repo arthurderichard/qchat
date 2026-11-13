@@ -11,6 +11,7 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Interface moderne** aux couleurs de QChat, en **thème clair ou sombre** : suit par défaut le
   réglage du bureau (et ses changements en direct), ou se force via ☰ › Thème.
 - **Réactions par emoji** sur les messages et les fichiers (👍 ❤️ 😂 🎉 ✅…).
+- **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
@@ -124,10 +125,21 @@ Entrée envoie, Maj+Entrée fait un retour à la ligne.
 un emoji. Les réactions s'affichent sous le message ; cliquez sur une pastille pour ajouter ou retirer
 la vôtre, survolez-la pour voir qui a réagi. Vous êtes notifié quand quelqu'un réagit à vos messages.
 
+**Modifier un message** : survolez l'un de vos messages et cliquez sur ✏ (ou clic droit › *Modifier*,
+ou flèche ↑ dans une zone de saisie vide pour le dernier envoyé). Entrée enregistre, Échap annule.
+Le message porte alors la mention « modifié » : cliquez dessus pour voir toutes ses versions.
+Les postes en version antérieure à 1.2.0 continuent d'afficher le texte d'origine.
+
 **Images et fichiers** : bouton 📎, glisser-déposer n'importe où dans la fenêtre, ou Ctrl+V (fichiers copiés
 dans le gestionnaire de fichiers, ou capture d'écran — un aperçu demande confirmation). Les images
-s'affichent en miniature (clic pour ouvrir) ; chaque pièce jointe propose *Ouvrir*, *Enregistrer
-sous…* et *Afficher dans le dossier*. Les fichiers reçus sont rangés dans
+s'affichent en miniature, et les GIF y sont animés ; chaque pièce jointe propose *Ouvrir*, *Enregistrer
+sous…* et *Afficher dans le dossier*.
+
+**Visionneuse** : un clic sur une miniature (ou *Ouvrir*) affiche les images, les PDF et les fichiers
+texte dans QChat même. Zoom avec + / − / 0 (ajuster), Ctrl+molette ou double-clic sur une image ;
+← → passent aux autres fichiers de la discussion ; Échap ferme. Les autres types de fichiers s'ouvrent
+avec l'application par défaut. Les PDF utilisent `pdftoppm` (paquet `poppler-utils`), et la coloration
+du code utilise GtkSourceView (`gir1.2-gtksource-4`) s'il est installé. Les fichiers reçus sont rangés dans
 `~/.local/share/qchat/files/` (droits 600, jamais exécutables). Un fichier destiné à quelqu'un
 d'absent part à son retour, comme un message.
 
@@ -173,6 +185,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/netutil.py` | interfaces réseau locales, validation des IP                |
 | `qchat/notify.py`  | notifications D-Bus                                         |
 | `qchat/gui.py`     | interface GTK 3                                             |
+| `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
 
 ## Publier une version
 

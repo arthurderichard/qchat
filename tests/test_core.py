@@ -330,6 +330,73 @@ class CoreTest(unittest.TestCase):
         time.sleep(1)
         self.assertEqual(self._reactions(self.a, msg.id), [("✅", "Chloé")])
 
+    def test_edit_direct_keeps_history(self):
+        cid = self.add(self.a, self.b)
+        msg = self.a.core.send_text(f"c:{cid}", "Réunion à 14 h")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_message(msg.id) is not None))
+        self.assertTrue(self.a.core.edit_text(msg.id, "Réunion à 15 h"))
+        self.assertTrue(self.a.core.edit_text(msg.id, "Réunion à 15 h 30"))
+        self.assertFalse(self.a.core.edit_text(msg.id, "Réunion à 15 h 30"))     # inchangé
+        self.assertTrue(wait_for(lambda: self.b.core.store.get_message(msg.id).text == "Réunion à 15 h 30"))
+        for node in (self.a, self.b):
+            m = node.core.store.get_message(msg.id)
+            self.assertIsNotNone(m.edited)
+            self.assertEqual([t for t, _ in node.core.store.message_history(msg.id)],
+                             ["Réunion à 14 h", "Réunion à 15 h", "Réunion à 15 h 30"])
+        self.assertTrue(any(n == "edited" and d.get("incoming") for n, d in self.b.events))
+        # Bob ne peut pas modifier le message d'Alice, ni via l'API ni en forgeant un paquet
+        self.assertFalse(self.b.core.edit_text(msg.id, "piraté"))
+        a_on_b = self.b.contact(self.a).id
+        self.b.core.store.enqueue(a_on_b, {"t": "edit", "id": "e1", "ref": msg.id,
+                                           "text": "piraté", "ts": time.time() + 10})
+        self.b.core.request_flush([a_on_b])
+        time.sleep(1)
+        self.assertEqual(self.a.core.store.get_message(msg.id).text, "Réunion à 15 h 30")
+
+    def test_edit_group_and_stale_edit_ignored(self):
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid, c_cid])
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_group(gid) for n in (self.b, self.c))))
+        msg = self.b.core.send_text(f"g:{gid}", "Je prends les croissants")
+        self.assertTrue(wait_for(lambda: self.c.core.store.get_message(msg.id) is not None))
+        self.b.core.edit_text(msg.id, "Je prends les pains au chocolat")
+        for node in (self.a, self.c):
+            self.assertTrue(wait_for(lambda n=node: n.core.store.get_message(msg.id).text
+                                     == "Je prends les pains au chocolat"))
+        # Une modification plus ancienne que la dernière connue ne remplace rien
+        store = self.c.core.store
+        self.assertFalse(store.edit_message(msg.id, "vieux", store.get_message(msg.id).edited - 5))
+        self.assertEqual(len(store.message_history(msg.id)), 2)
+
+    def test_viewable_kind(self):
+        try:
+            from qchat import viewer
+        except (ImportError, ValueError) as e:
+            self.skipTest(f"GTK indisponible : {e}")
+        d = self.a.tmp.name
+        gif = os.path.join(d, "a.gif")
+        with open(gif, "wb") as f:      # GIF 1×1 minimal
+            f.write(bytes.fromhex("47494638396101000100800000000000ffffff21f90401000000002c000000000100"
+                                  "0100000202440100") + b";")
+        cases = {"a.gif": ("image/gif", None), "doc.pdf": ("application/pdf", b"%PDF-1.4\n%%EOF"),
+                 "notes.txt": ("text/plain", "Réunion à 14 h\n".encode()),
+                 "conf.json": ("application/json", b'{"a": 1}'),
+                 "sans-ext": ("application/octet-stream", b"juste du texte"),
+                 "bin.dat": ("application/octet-stream", b"\x00\x01\x02binaire"),
+                 "faux.png": ("image/png", b"pas une image")}
+        expected = {"a.gif": "image", "doc.pdf": "pdf", "notes.txt": "text", "conf.json": "text",
+                    "sans-ext": "text", "bin.dat": None, "faux.png": None}
+        for name, (mime, data) in cases.items():
+            path = os.path.join(d, name)
+            if data is not None:
+                with open(path, "wb") as f:
+                    f.write(data)
+            self.assertEqual(viewer.viewable_kind(path, mime), expected[name], name)
+        self.assertEqual(viewer.fit(1600, 1000, 320, 240), (320, 200))
+        self.assertEqual(viewer.fit(100, 50, 320, 240), (100, 50))      # jamais agrandi
+
     def test_corrupted_file_rejected(self):
         cid = self.add(self.a, self.b)
         msg = self.a.core.send_file(f"c:{cid}", self._file("a.txt", b"contenu original"))

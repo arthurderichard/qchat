@@ -495,6 +495,22 @@ class Core:
         self._emit("reaction", msg_id=msg_id, emoji=emoji, on=on, incoming=False)
         self.request_flush(targets)
 
+    def edit_text(self, msg_id, text):
+        """Modifie un de mes messages texte ; l'ancienne version reste dans l'historique."""
+        m = self.store.get_message(msg_id)
+        text = text.strip()[:MAX_TEXT]
+        if not m or not m.outgoing or m.kind != "text" or not text or text == m.text:
+            return False
+        ts = max(time.time(), (m.edited or m.ts) + 0.001)
+        self.store.edit_message(msg_id, text, ts)
+        payload = {"t": "edit", "id": uuid.uuid4().hex, "ref": msg_id, "text": text, "ts": ts}
+        targets = self._targets(m.conv, payload)
+        for cid in targets:
+            self.store.enqueue(cid, payload)
+        self._emit("edited", msg_id=msg_id, incoming=False)
+        self.request_flush(targets)
+        return True
+
     def _delete_files(self, conv):
         for path in self.store.attachment_paths(conv):
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
@@ -793,6 +809,8 @@ class Core:
             self._on_leave(cid, obj)
         elif t == "react":
             self._on_react(cid, obj)
+        elif t == "edit":
+            self._on_edit(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")
@@ -914,6 +932,21 @@ class Core:
         # Message pas encore reçu (groupe : réaction arrivée avant lui) : on garde la réaction.
         if self.store.set_reaction(ref, self.store.get_contact(cid).vk, emoji, on):
             self._emit("reaction", msg_id=ref, contact_id=cid, emoji=emoji, on=on, incoming=True)
+
+    def _on_edit(self, cid, obj):
+        ref, text, ts = obj.get("ref"), obj.get("text"), obj.get("ts")
+        if not (isinstance(ref, str) and _MSG_ID.fullmatch(ref) and isinstance(text, str)
+                and isinstance(ts, (int, float)) and not isinstance(ts, bool)):
+            return
+        text = text.strip()[:MAX_TEXT]
+        gid = obj.get("gid")
+        conv = f"g:{gid}" if gid is not None else f"c:{cid}"
+        m = self.store.get_message(ref)
+        # Seul l'auteur peut modifier, dans la conversation d'origine, un message texte.
+        if not text or not m or m.conv != conv or m.sender_id != cid or m.kind != "text":
+            return
+        if self.store.edit_message(ref, text, min(ts, time.time() + 60)):
+            self._emit("edited", msg_id=ref, incoming=True)
 
     def _on_leave(self, cid, obj):
         gid = obj.get("gid")
