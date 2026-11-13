@@ -131,6 +131,15 @@ class Message:
     edited: float = None        # date de la dernière modification, None si jamais modifié
     reply_to: str = None        # identifiant du message auquel celui-ci répond
     deleted: float = None       # date de suppression par son auteur, None sinon
+    mentions: list = None       # clés publiques des personnes mentionnées (@Nom), groupes seulement
+
+    def __post_init__(self):
+        if isinstance(self.mentions, str):
+            try:
+                self.mentions = [v for v in json.loads(self.mentions) if isinstance(v, str)]
+            except ValueError:
+                self.mentions = []
+        self.mentions = self.mentions or []
 
     @property
     def outgoing(self):
@@ -152,7 +161,7 @@ class Store:
     def _migrate(self):
         """Colonnes ajoutées après la création des premières bases."""
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(messages)")}
-        for name, decl in (("reply_to", "TEXT"), ("deleted", "REAL")):
+        for name, decl in (("reply_to", "TEXT"), ("deleted", "REAL"), ("mentions", "TEXT")):
             if name not in cols:
                 self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {decl}")
 
@@ -312,19 +321,21 @@ class Store:
 
     # -- messages -----------------------------------------------------------
     _M = ("SELECT id, conv, sender_id, kind, text, ts, status, "
-          "(SELECT MAX(e.ts) FROM message_edits e WHERE e.msg_id = messages.id), reply_to, deleted "
-          "FROM messages")
+          "(SELECT MAX(e.ts) FROM message_edits e WHERE e.msg_id = messages.id), reply_to, deleted, "
+          "mentions FROM messages")
 
     def add_message(self, msg_id, conv, sender_id, text, ts, status, kind="text", unread=False,
-                    reply_to=None):
+                    reply_to=None, mentions=None):
         """Insère un message ; renvoie None si déjà connu (doublon)."""
         try:
-            self._x("INSERT INTO messages (id, conv, sender_id, kind, text, ts, status, unread, reply_to) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (msg_id, conv, sender_id, kind, text, ts, status, int(unread), reply_to))
+            self._x("INSERT INTO messages (id, conv, sender_id, kind, text, ts, status, unread, reply_to, "
+                    "mentions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (msg_id, conv, sender_id, kind, text, ts, status, int(unread), reply_to,
+                     json.dumps(mentions) if mentions else None))
         except sqlite3.IntegrityError:
             return None
-        return Message(msg_id, conv, sender_id, kind, text, ts, status, reply_to=reply_to)
+        return Message(msg_id, conv, sender_id, kind, text, ts, status, reply_to=reply_to,
+                       mentions=list(mentions or []))
 
     def delete_message(self, msg_id, ts):
         """Supprime le contenu d'un message (texte, versions, réactions, pièce jointe) en gardant sa

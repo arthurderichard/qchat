@@ -18,7 +18,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import __version__, emojis, gifs, netutil, updater  # noqa: E402
-from .core import DEFAULT_PORT, MAX_AVATAR, Core, sniff_mime  # noqa: E402
+from .core import DEFAULT_PORT, MAX_AVATAR, Core, mention_pattern, sniff_mime, valid_emoji  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
 from .notify import Notifier  # noqa: E402
@@ -196,7 +196,7 @@ class ConvRow(Gtk.ListBoxRow):
         self.add(box)
 
 
-QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "✅", "👀", "🔥", "👏", "🤔"]
+QUICK_EMOJIS = ["❤️", "👍", "👎", "😂", "😮", "😢", "🔥"]
 
 SECTIONS = {"group": "Groupes", "contact": "Contacts", "peer": "Sur le réseau (non ajoutés)"}
 
@@ -218,6 +218,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._rows = {}              # msg_id -> ligne de la liste (conversation affichée)
         self._replies = {}           # msg_id -> ids des messages affichés qui le citent
         self._sel_label = None       # dernier texte de bulle cliqué (pour Ctrl+C)
+        self._react_target = None    # message visé par le sélecteur d'emoji des réactions
         self._viewer = None          # visionneuse de pièces jointes ouverte
         self._last_day = None
         self._stick_bottom = True
@@ -431,6 +432,9 @@ class MainWindow(Gtk.ApplicationWindow):
         in_overlay.set_overlay_pass_through(placeholder, True)
         buf = self.input.get_buffer()
         buf.connect("changed", lambda b: placeholder.set_visible(b.get_char_count() == 0))
+        self.mention_popover = MentionPopover(self)
+        buf.connect("changed", lambda _b: GLib.idle_add(self.mention_popover.update))
+        buf.connect("notify::cursor-position", lambda *_a: self.mention_popover.update())
         composer.pack_start(in_overlay, True, True, 0)
         send = Gtk.Button.new_from_icon_name("document-send-symbolic", Gtk.IconSize.BUTTON)
         send.set_tooltip_text("Envoyer (Entrée) — Maj+Entrée pour un retour à la ligne")
@@ -670,7 +674,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if m.kind == "file":
             bubble.pack_start(self._attachment_widget(m), False, False, 0)
         else:
-            text = _label(m.text, wrap=True, selectable=True)
+            text = _label("", wrap=True, selectable=True)
+            self._set_message_text(text, bubble, m)
             text.set_max_width_chars(60)
             text.set_can_focus(False)
             text.connect("button-press-event", lambda w, _e: setattr(self, "_sel_label", w) and False)
@@ -685,6 +690,58 @@ class MainWindow(Gtk.ApplicationWindow):
         if m.kind == "text":
             self._text_labels[m.id] = (text, meta)
         return self._with_reactions(m, bubble), halign
+
+    def _mention_names(self, m):
+        """Noms affichables des personnes mentionnées dans ``m`` (prénom compris)."""
+        me = self.core.identity.vk_hex
+        names = []
+        for vk in m.mentions:
+            if vk == me:
+                name = self.core.name
+            else:
+                c = self.core.store.contact_by_vk(vk)
+                name = c.name if c else None
+            if name:
+                names.append(name)
+                if name.split():
+                    names.append(name.split()[0])
+        return names
+
+    def _set_message_text(self, label, bubble, m):
+        """Texte d'une bulle : emoji seuls affichés en grand, mentions @Nom mises en évidence."""
+        ctx, bctx = label.get_style_context(), bubble.get_style_context()
+        for c in ("jumbo", "jumbo-xl"):
+            ctx.remove_class(c)
+        bctx.remove_class("jumbo-bubble")
+        count = emojis.emoji_only(m.text)
+        if count:
+            ctx.add_class("jumbo-xl" if count <= 3 else "jumbo")
+            bctx.add_class("jumbo-bubble")
+            label.set_text(m.text)
+            return
+        me = self.core.identity.vk_hex
+        if me in m.mentions:
+            bctx.add_class("mentioned")
+        names = sorted(set(self._mention_names(m)), key=len, reverse=True)
+        if not names:
+            label.set_text(m.text)
+            return
+        spans = []
+        for name in names:
+            for match in mention_pattern(name).finditer(m.text):
+                if not any(a < match.end() and match.start() < b for a, b in spans):
+                    spans.append((match.start(), match.end()))
+        if not spans:
+            label.set_text(m.text)
+            return
+        color = self.app.theme.palette["accent"]
+        out, pos = [], 0
+        for a, b in sorted(spans):
+            out.append(GLib.markup_escape_text(m.text[pos:a]))
+            out.append(f"<span foreground='{color}' weight='bold'>{GLib.markup_escape_text(m.text[a:b])}</span>")
+            pos = b
+        out.append(GLib.markup_escape_text(m.text[pos:]))
+        label.set_markup("".join(out))
 
     def _rerender(self, msg_id):
         """Reconstruit la bulle d'un message affiché (suppression, citation modifiée…)."""
@@ -817,12 +874,17 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _react_popover(self, anchor, msg_id):
         pop = Gtk.Popover(relative_to=anchor)
-        grid = Gtk.Grid(margin=4)
-        for i, emoji in enumerate(QUICK_EMOJIS):
+        grid = Gtk.Box(spacing=0, margin=4)
+        for emoji in QUICK_EMOJIS:
             b = Gtk.Button(label=emoji, relief=Gtk.ReliefStyle.NONE)
             b.get_style_context().add_class("emoji-pick")
             b.connect("clicked", lambda _b, e=emoji: (self.core.react(msg_id, e), pop.popdown()))
-            grid.attach(b, i % 6, i // 6, 1, 1)
+            grid.pack_start(b, False, False, 0)
+        more = Gtk.Button(relief=Gtk.ReliefStyle.NONE, tooltip_text="Tous les emoji…")
+        more.add(Gtk.Image.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON))
+        more.get_style_context().add_class("emoji-more")
+        more.connect("clicked", lambda _b: (pop.popdown(), self._react_picker(anchor, msg_id)))
+        grid.pack_start(more, False, False, 0)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.pack_start(grid, False, False, 0)
         m = self.core.store.get_message(msg_id)
@@ -852,6 +914,17 @@ class MainWindow(Gtk.ApplicationWindow):
         content.show_all()
         pop.popup()
         return True
+
+    def _react_picker(self, anchor, msg_id):
+        """Sélecteur complet pour réagir avec n'importe quel emoji."""
+        picker = self.__dict__.get("_react_popover_full")
+        if picker is None:
+            picker = EmojiPopover(self, on_pick=lambda e: self._react_target and self.core.react(
+                self._react_target, e), accept=valid_emoji)
+            self._react_popover_full = picker
+        self._react_target = msg_id
+        picker.set_relative_to(anchor)
+        picker.popup()
 
     def on_reaction(self, msg_id, contact_id=None, emoji=None, on=False, incoming=False):
         box = self._reaction_boxes.get(msg_id)
@@ -1164,6 +1237,8 @@ class MainWindow(Gtk.ApplicationWindow):
         return ok
 
     def _on_input_key(self, _w, event):
+        if self.mention_popover.handle_key(event):
+            return True
         if (event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_v, Gdk.KEY_V)
                 and self.current and self._paste()):
             return True
@@ -1338,8 +1413,7 @@ class MainWindow(Gtk.ApplicationWindow):
         m = self.core.store.get_message(msg_id)
         entry = self._text_labels.get(msg_id)
         if m and entry:
-            entry[0].set_text(m.text)
-            self._set_meta(entry[1], m)
+            self._rerender(msg_id)
         for rid in list(self._replies.get(msg_id, ())):
             self._rerender(rid)
         if self._replying == msg_id and m:
@@ -1401,6 +1475,8 @@ class MainWindow(Gtk.ApplicationWindow):
             if m.conv.startswith("g:"):
                 g = self.core.store.get_group(m.conv[2:])
                 title = f"{sender} — {g.name}" if g else sender
+                if self.core.identity.vk_hex in m.mentions:
+                    title = f"{sender} vous a mentionné" + (f" — {g.name}" if g else "")
             body = m.text
             if m.kind == "file":
                 att = self.core.store.get_attachment(m.id)
@@ -1639,9 +1715,11 @@ class EmojiPopover(Gtk.Popover):
 
     RECENT_MAX = 24
 
-    def __init__(self, win):
+    def __init__(self, win, on_pick=None, accept=None):
         super().__init__()
         self.win, self.core = win, win.core
+        self.on_pick = on_pick          # par défaut : insertion dans la zone de saisie
+        self.accept = accept            # filtre optionnel (réactions : emoji acceptés par le protocole)
         self.get_style_context().add_class("emoji-popover")
         self._built = False
         self._sections = []         # (titre, flowbox, en-tête, onglet)
@@ -1720,7 +1798,7 @@ class EmojiPopover(Gtk.Popover):
             flows[group] = self._section(title, icon)
         for e in emojis.load():
             flow = flows.get(e.group)
-            if flow is not None and self._renderable(e.char):
+            if flow is not None and self._renderable(e.char) and (not self.accept or self.accept(e.char)):
                 flow.add(self._cell(e))
         self.list.show_all()
         self.tabs.show_all()
@@ -1748,7 +1826,7 @@ class EmojiPopover(Gtk.Popover):
         by_char = {e.char: e for e in emojis.load()}
         for char in self._recent():
             e = by_char.get(char)
-            if e:
+            if e and (not self.accept or self.accept(e.char)):
                 self.recent_flow.add(self._cell(e))
         self.recent_flow.show_all()
 
@@ -1793,11 +1871,128 @@ class EmojiPopover(Gtk.Popover):
             self._insert(e)
 
     def _insert(self, emoji):
+        recent = [emoji.char] + [c for c in self._recent() if c != emoji.char]
+        self.core.store.set_setting("emoji_recent", json.dumps(recent[:self.RECENT_MAX]))
+        self.popdown()
+        if self.on_pick:
+            self.on_pick(emoji.char)
+            return
         buf = self.win.input.get_buffer()
         buf.delete_selection(True, True)
         buf.insert_at_cursor(emoji.char)
-        recent = [emoji.char] + [c for c in self._recent() if c != emoji.char]
-        self.core.store.set_setting("emoji_recent", json.dumps(recent[:self.RECENT_MAX]))
+        self.win.input.grab_focus()
+
+
+class MentionPopover(Gtk.Popover):
+    """Suggestions « @ » dans un groupe : membres dont le nom commence par ce qui est tapé.
+    ↑/↓ pour choisir, Entrée ou Tab pour insérer, Échap pour fermer."""
+
+    MAX = 6
+
+    def __init__(self, win):
+        super().__init__(relative_to=win.input)
+        self.win = win
+        self.set_modal(False)
+        self.set_position(Gtk.PositionType.TOP)
+        self.get_style_context().add_class("mention-popover")
+        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
+        self.list.connect("row-activated", lambda _l, row: self._choose(row))
+        self.add(self.list)
+        self._start = None          # position du « @ » dans le tampon
+        self._closed_at = None      # « @ » pour lequel l'utilisateur a fermé les suggestions
+
+    def _query(self):
+        """(position du @, texte tapé après) si le curseur suit un « @… », sinon None."""
+        buf = self.win.input.get_buffer()
+        cur = buf.get_iter_at_mark(buf.get_insert())
+        line = cur.copy()
+        line.set_line_offset(0)
+        before = buf.get_text(line, cur, False)
+        at = before.rfind("@")
+        if at < 0 or (at > 0 and not before[at - 1].isspace()):
+            return None
+        query = before[at + 1:]
+        if len(query) > 40 or "\n" in query or query.count(" ") > 2:
+            return None
+        return line.get_offset() + at, query
+
+    def _members(self):
+        conv = self.win.current or ""
+        if not conv.startswith("g:"):
+            return []
+        store = self.win.core.store
+        people = [store.get_contact(i) for i in store.group_member_ids(conv[2:])]
+        return sorted((c for c in people if c), key=lambda c: c.name.lower())
+
+    def update(self):
+        found = self._query()
+        if not found or found[0] == self._closed_at:
+            if found is None:
+                self._closed_at = None
+            self.popdown()
+            return False
+        start, query = found
+        q = emojis.fold(query)
+        matches = [c for c in self._members()
+                   if emojis.fold(c.name).startswith(q)
+                   or any(emojis.fold(w).startswith(q) for w in c.name.split())]
+        if not matches:
+            self.popdown()
+            return False
+        self._start = start
+        for row in self.list.get_children():
+            row.destroy()
+        for c in matches[:self.MAX]:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(spacing=8, margin=4)
+            box.pack_start(_avatar(c.name, small=True, image=self.win.core.avatar_path(c.conv)), False, False, 0)
+            box.pack_start(_label(c.name), False, False, 0)
+            row.add(box)
+            row.contact = c
+            self.list.add(row)
+        self.list.show_all()
+        self.list.select_row(self.list.get_row_at_index(0))
+        # Le popover pointe vers le « @ » tapé.
+        buf = self.win.input.get_buffer()
+        rect = self.win.input.get_iter_location(buf.get_iter_at_offset(start))
+        x, y = self.win.input.buffer_to_window_coords(Gtk.TextWindowType.WIDGET, rect.x, rect.y)
+        rect.x, rect.y = x, y
+        self.set_pointing_to(rect)
+        if not self.get_visible():
+            self.popup()
+        return False
+
+    def handle_key(self, event):
+        if not self.get_visible():
+            return False
+        key = event.keyval
+        row = self.list.get_selected_row()
+        rows = self.list.get_children()
+        if key in (Gdk.KEY_Down, Gdk.KEY_Up) and rows:
+            i = rows.index(row) if row in rows else 0
+            i = (i + (1 if key == Gdk.KEY_Down else -1)) % len(rows)
+            self.list.select_row(rows[i])
+            return True
+        if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_Tab) and row:
+            self._choose(row)
+            return True
+        if key == Gdk.KEY_Escape:
+            self._closed_at = self._start
+            self.popdown()
+            return True
+        return False
+
+    def _choose(self, row):
+        found = self._query()
+        if not found:
+            self.popdown()
+            return
+        start, query = found
+        buf = self.win.input.get_buffer()
+        begin = buf.get_iter_at_offset(start)
+        end = buf.get_iter_at_offset(start + 1 + len(query))
+        buf.delete(begin, end)
+        buf.insert(buf.get_iter_at_offset(start), f"@{row.contact.name} ")
         self.popdown()
         self.win.input.grab_focus()
 

@@ -330,6 +330,20 @@ class CoreTest(unittest.TestCase):
         time.sleep(1)
         self.assertEqual(self._reactions(self.a, msg.id), [("✅", "Chloé")])
 
+    def test_mentions_in_group(self):
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid, c_cid])
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_group(gid) for n in (self.b, self.c))))
+        msg = self.a.core.send_text(f"g:{gid}", "@Bob tu peux regarder ? (cc mail@Chloé.fr)")
+        self.assertEqual(msg.mentions, [self.b.vk])
+        for node in (self.b, self.c):
+            self.assertTrue(wait_for(lambda n=node: n.core.store.get_message(msg.id) is not None))
+            self.assertEqual(node.core.store.get_message(msg.id).mentions, [self.b.vk])
+        # en conversation directe, pas de mention
+        direct = self.a.core.send_text(f"c:{b_cid}", "@Bob salut")
+        self.assertEqual(direct.mentions, [])
+
     def test_reply_to_message(self):
         cid = self.add(self.a, self.b)
         q = self.a.core.send_text(f"c:{cid}", "On mange où ?")

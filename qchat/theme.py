@@ -123,6 +123,11 @@ window.qchat { background-color: $bg; color: $fg; }
                          border: 1px dashed alpha($muted, 0.6); }
 .qchat .bubble.deleted .meta { color: $muted; }
 .qchat .deleted-text { font-style: italic; color: $muted; }
+.qchat .jumbo { font-size: 30px; }
+.qchat .jumbo-xl { font-size: 46px; }
+.qchat .bubble.jumbo-bubble { background-color: transparent; box-shadow: none; padding: 0 4px 2px 4px; }
+.qchat .bubble.mentioned { border-left: 3px solid $accent; }
+.emoji-more { padding: 2px 6px; min-height: 0; min-width: 0; }
 .qchat .flash .bubble { box-shadow: 0 0 0 3px alpha($accent, 0.55); }
 .qchat .interactions-btn { border-radius: 999px; padding: 2px 10px; margin-right: 4px; }
 .emoji-popover .emoji-cell { font-size: 22px; padding: 2px; }

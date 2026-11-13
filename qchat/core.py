@@ -142,6 +142,31 @@ def _unlink(path):
         pass
 
 
+def mention_pattern(name):
+    """« @Nom » dans un texte (insensible à la casse, pas collé à une autre lettre)."""
+    return re.compile(r"(?<![\w@])@" + re.escape(name) + r"(?!\w)", re.IGNORECASE)
+
+
+def find_mentions(text, people):
+    """Parmi ``people`` [(clé, nom)], ceux mentionnés dans ``text`` par « @Nom complet », ou par
+    « @Prénom » quand ce prénom n'est porté que par une seule de ces personnes."""
+    if "@" not in text:
+        return []
+    firsts = {}
+    for _key, name in people:
+        first = name.split()[0].lower() if name.split() else ""
+        firsts[first] = firsts.get(first, 0) + 1
+    found = []
+    for key, name in people:
+        words = name.split()
+        if not words:
+            continue
+        if mention_pattern(name).search(text) or (
+                firsts[words[0].lower()] == 1 and mention_pattern(words[0]).search(text)):
+            found.append(key)
+    return found
+
+
 def valid_emoji(emoji):
     """Une réaction est un emoji court : pas de texte, d'espace ni de caractère de contrôle."""
     return (isinstance(emoji, str) and 0 < len(emoji) <= 16
@@ -162,6 +187,7 @@ def detect_file(path, name):
 
 
 _MSG_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _clean_port(port):
@@ -632,6 +658,13 @@ class Core:
         msg_id = uuid.uuid4().hex
         ts = time.time()
         payload = {"t": "msg", "id": msg_id, "ts": ts, "text": text}
+        mentions = []
+        if conv.startswith("g:"):
+            people = [(c.vk, c.name) for c in (self.store.get_contact(i)
+                                               for i in self.store.group_member_ids(conv[2:])) if c and c.vk]
+            mentions = find_mentions(text, people)
+            if mentions:
+                payload["mentions"] = mentions
         ref = self.store.get_message(reply_to) if reply_to else None
         if ref and ref.conv == conv and ref.kind != "system" and ref.deleted is None:
             payload["reply"] = ref.id
@@ -639,7 +672,8 @@ class Core:
             reply_to = None
         targets = self._targets(conv, payload)
         msg = self.store.add_message(msg_id, conv, None, text, ts,
-                                     "pending" if targets else "delivered", reply_to=reply_to)
+                                     "pending" if targets else "delivered", reply_to=reply_to,
+                                     mentions=mentions)
         for cid in targets:
             self.store.enqueue(cid, payload, msg_id)
         self._emit("message", message=msg)
@@ -1135,8 +1169,12 @@ class Core:
         reply = obj.get("reply")
         if not (isinstance(reply, str) and _MSG_ID.fullmatch(reply)):
             reply = None
+        mentions = obj.get("mentions") if gid is not None else None
+        if not (isinstance(mentions, list) and len(mentions) <= 64):
+            mentions = []
+        mentions = [v for v in mentions if isinstance(v, str) and _HEX64.fullmatch(v)]
         msg = self.store.add_message(msg_id, conv, cid, text[:MAX_TEXT], ts, "received", unread=True,
-                                     reply_to=reply)
+                                     reply_to=reply, mentions=mentions)
         if msg:
             self._emit("message", message=msg, incoming=True)
 

@@ -10,7 +10,8 @@ Aucun serveur : chaque poste discute directement avec les autres.
   chiffré lui aussi de bout en bout.
 - **Interface moderne** aux couleurs de QChat, en **thème clair ou sombre** : suit par défaut le
   réglage du bureau (et ses changements en direct), ou se force via ☰ › Thème.
-- **Réactions par emoji** sur les messages et les fichiers (👍 ❤️ 😂 🎉 ✅…).
+- **Réactions par emoji** sur les messages et les fichiers (❤️ 👍 👎 😂 😮 😢 🔥, ou n'importe quel emoji via +).
+- **Mentions** dans les groupes : `@Tristan` met le message en évidence et prévient la personne.
 - **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
 - **Réponse à un message** précis (citation cliquable) et **suppression** de ses propres messages.
 - **Emoji** : sélecteur complet (bouton 😊 de la barre de message) avec recherche en français.
@@ -174,6 +175,14 @@ apparaît au-dessus de la réponse ; cliquez sur la citation pour retrouver l'or
 **Supprimer un message** : clic droit sur l'un de vos messages › *Supprimer*. Chez vous comme chez vos
 destinataires, il est remplacé par « Message supprimé par son auteur » ; son texte, ses versions, ses
 réactions et sa pièce jointe sont effacés.
+
+**Mentionner quelqu'un** (groupes) : tapez `@` puis le début de son nom ; choisissez dans la liste
+(↑/↓ puis Entrée ou Tab). `@Prénom` suffit aussi quand le prénom est unique dans le groupe. La
+mention apparaît en couleur, et la personne mentionnée voit le message marqué d'un trait et reçoit
+une notification « … vous a mentionné ».
+
+**Réagir** : survolez un message et cliquez sur 😊 (ou clic droit) : ❤️ 👍 👎 😂 😮 😢 🔥, ou **+** pour
+choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche en grand.
 
 **Emoji** : le bouton 😊, à droite de *GIF*, ouvre la liste de tous les emoji, par catégorie, avec les
 emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
