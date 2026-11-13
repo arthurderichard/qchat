@@ -2,31 +2,31 @@
 Hash: SHA512
 
 Codename: stable
-Date: Fri, 13 Nov 2026 14:45:55 +0000
+Date: Fri, 13 Nov 2026 15:41:59 +0000
 Description: Dépôt apt de QChat
 Label: QChat
 Origin: QChat
 Suite: stable
 MD5Sum:
- 9c8abdec1d35ee022cb4a32707d7a059             8735 Packages
- fc24a953decaafb97ffa026fee86a911             1609 Packages.gz
- 1c65b2971334de2b0d01b4dfb2510475             1296 Release
+ 4e2c07020125cf43114f1af7f44a4810             9753 Packages
+ d098d3d7eab36a6c18ebdaa080ee0b3e             1718 Packages.gz
+ 185af344c3bf31d8bdc296973566b495             1296 Release
 SHA1:
- 24b06a29754ad5c777725a9d93709390807c5ea0             8735 Packages
- 66af214645666d418b6f38a43de59d239d5fe12f             1609 Packages.gz
- 9e483dbcdf91c1537f8ff6a9f8c57daf00e233d0             1296 Release
+ 8f3ac160820132e24f947bd2eae13af544c5f6dd             9753 Packages
+ 6e7c55bcec9f14dd8fae9f0b25cec788555d58ca             1718 Packages.gz
+ 6993a104961cf08ccbfa6be8fffd18995221a05c             1296 Release
 SHA256:
- 05bac7c114e9143b11675821e1e52a1f00f57e5de4d5642235d9fe5462732fb6             8735 Packages
- 07a397d85709d83da22094c0311b7ba015debc07bce9f1674c17f256aaa0c808             1609 Packages.gz
- 01bfdafe03cc76517bb1a00909f380852cee31876180819b86c3dfcea946ba81             1296 Release
+ b3f8badacb76d9645fafc7ae5da0f1316b07a0b8a1e02a79053240bd3d32fa2f             9753 Packages
+ 661bb2a4832c8b60bd24db333b80adc9e70d6fbb88d0a8244656b0c663c47e9a             1718 Packages.gz
+ 75829ce76c0cd6de8e58aeaf155445044e1561719bc0aa8d02e67a297ccccaa6             1296 Release
 SHA512:
- 3e6c8dd26d062d7b943061baec0f9e49f87b005a8dd9e94a2c49647a47cd4ef88933466afa89a9a0e0c1e1e4b1c87031f418dbd4e4c699a6aa663fd0f6586ced             8735 Packages
- 1d763c2c0951008e54a7eb0bfc96b5b0aacca6a1353868c93d8053983d5c716eda2bc6337ab59ce30326cee35c1672c2dc14f7ab2df270cb53d0be4270e64a0c             1609 Packages.gz
- 209e67839c6eeb66eb27659aa74470480914158c57bc65abf12860fa3f6cb71d01171d0bbe6f30f71dd5a7d01dad9ab836e3deeb9408b720ac3547313a42118a             1296 Release
+ 1d0e404a90f92692f2ee6a19edac9639914f51eaa9f22d897f2aa7c3e17e7f39dbb642ae1768a6778c4dbfcbaa35323396585438866c346cb589a769d88570fc             9753 Packages
+ e307c9ba1901766e99b09d76deb0924e3a8e22de196803df894c6e94deda6183c967fcc5cf408474a2836bdd3076842eba8cebed4ec6de54b0cf8eef470c758d             1718 Packages.gz
+ 285ef4d35f6c33b502bd5bb4746c2b0bca3a64b11ad5f29d47505a8b7afdeb453cfbd2c1ec9cde5b93d7a8a128a70e2902b163c683ec370770de976ac2a551bb             1296 Release
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQRY+3xaOlaocCdO/2sm3ttnmuPfVwUCavciowAKCRAm3ttnmuPf
-V/gjAP9myosJy+MtMLrfFOMeHyyH9pof8H7py72wdlvYl+EiwgD6A3BBT9mvc8Ce
-NB8yyRNyEm86Xj6hhmxqvXDeArtD1wc=
-=09gk
+iHUEARYKAB0WIQRY+3xaOlaocCdO/2sm3ttnmuPfVwUCavcvxwAKCRAm3ttnmuPf
+V7LsAPsEXrJniOV0XWh+8aFFWgoUyEWcS2eFIzmKPaN7P+NsRwD/Q1s2WBHaIYXE
+2N3YSWr0rpYU8eGN9aM0Hec2sWU/yg4=
+=UYLc
 -----END PGP SIGNATURE-----
