@@ -385,6 +385,41 @@ class CoreTest(unittest.TestCase):
         self.b.core.mark_read(f"g:{gid}")
         self.assertTrue(wait_for(lambda: read_by() == {b_cid, c_cid}))
 
+    def test_mute_is_announced_and_recorded_on_delivery(self):
+        cid = self.add(self.a, self.b)
+        first = self.a.core.send_text(f"c:{cid}", "Bonjour")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_message(first.id) is not None))
+        conv_b = self.b.contact(self.a).conv
+        until = self.b.core.set_mute(conv_b, 3600)
+        self.assertAlmostEqual(self.b.core.muted_until(conv_b), until, delta=1)
+        self.assertTrue(wait_for(lambda: self.a.core.peer_muted_until(cid, f"c:{cid}") > 0))
+        self.assertTrue(any(n == "peer_mute" for n, _d in self.a.events))
+        msg = self.a.core.send_text(f"c:{cid}", "Tu es en sourdine ?")
+        self.assertTrue(wait_for(lambda: self.a.core.store.muted_receipts(msg.id)))
+        self.assertAlmostEqual(self.a.core.store.muted_receipts(msg.id)[self.b.contact(self.a) and cid],
+                               until, delta=1)
+        self.assertEqual(self.a.core.store.muted_receipts(first.id), {})    # reçu avant la sourdine
+        # réactivation : annoncée elle aussi
+        self.b.core.set_mute(conv_b, 0)
+        self.assertEqual(self.b.core.muted_until(conv_b), 0)
+        self.assertTrue(wait_for(lambda: self.a.core.peer_muted_until(cid, f"c:{cid}") == 0))
+        after = self.a.core.send_text(f"c:{cid}", "Et maintenant ?")
+        self.assertTrue(wait_for(lambda: self.a.core.store.receipts(after.id)[0][1] is not None))
+        self.assertEqual(self.a.core.store.muted_receipts(after.id), {})
+
+    def test_mute_in_group(self):
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid, c_cid])
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_group(gid) for n in (self.b, self.c))))
+        self.c.core.set_mute(f"g:{gid}", 4 * 3600)
+        self.assertTrue(wait_for(lambda: self.a.core.peer_muted_until(c_cid, f"g:{gid}") > 0))
+        # la sourdine du groupe ne vaut pas pour la conversation directe
+        self.assertEqual(self.a.core.peer_muted_until(c_cid, f"c:{c_cid}"), 0)
+        msg = self.a.core.send_text(f"g:{gid}", "Réunion à 14 h")
+        self.assertTrue(wait_for(lambda: set(self.a.core.store.muted_receipts(msg.id)) == {c_cid}))
+
     def test_reply_to_message(self):
         cid = self.add(self.a, self.b)
         q = self.a.core.send_text(f"c:{cid}", "On mange où ?")

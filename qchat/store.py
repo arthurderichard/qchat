@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS receipts (
     read REAL,                      -- date de lecture
     PRIMARY KEY (msg_id, contact_id)
 );
+CREATE TABLE IF NOT EXISTS peer_mutes (
+    contact_id INTEGER NOT NULL,    -- quelqu'un qui a mis une conversation en sourdine
+    conv TEXT NOT NULL,             -- la conversation, vue de chez moi ('c:<id>' ou 'g:<gid>')
+    until REAL NOT NULL,            -- fin de la sourdine (0 : réactivée)
+    PRIMARY KEY (contact_id, conv)
+);
 CREATE TABLE IF NOT EXISTS avatars (
     owner TEXT PRIMARY KEY,         -- 'me', 'vk:<clé publique>' ou 'g:<gid>'
     sha TEXT NOT NULL,              -- SHA-256 de l'image
@@ -167,10 +173,12 @@ class Store:
 
     def _migrate(self):
         """Colonnes ajoutées après la création des premières bases."""
-        cols = {r[1] for r in self._db.execute("PRAGMA table_info(messages)")}
-        for name, decl in (("reply_to", "TEXT"), ("deleted", "REAL"), ("mentions", "TEXT")):
-            if name not in cols:
-                self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {decl}")
+        for table, columns in (("messages", (("reply_to", "TEXT"), ("deleted", "REAL"), ("mentions", "TEXT"))),
+                               ("receipts", (("muted", "REAL"),))):
+            cols = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in cols:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def close(self):
         with self._lock:
@@ -392,10 +400,24 @@ class Store:
         for cid in contact_ids:
             self._x("INSERT OR IGNORE INTO receipts (msg_id, contact_id) VALUES (?, ?)", (msg_id, cid))
 
-    def set_delivered(self, msg_id, cid, ts):
-        cur = self._x("UPDATE receipts SET delivered=? WHERE msg_id=? AND contact_id=? AND delivered IS NULL",
-                      (ts, msg_id, cid))
+    def set_delivered(self, msg_id, cid, ts, muted=None):
+        """Distribué à ``cid`` ; ``muted`` : fin de sa sourdine si la conversation l'était alors."""
+        cur = self._x("UPDATE receipts SET delivered=?, muted=? WHERE msg_id=? AND contact_id=? "
+                      "AND delivered IS NULL", (ts, muted, msg_id, cid))
         return cur.rowcount > 0
+
+    def muted_receipts(self, msg_id):
+        """{contact_id: fin de sourdine} des destinataires en sourdine quand le message leur est arrivé."""
+        return dict(self._q("SELECT contact_id, muted FROM receipts WHERE msg_id=? AND muted IS NOT NULL",
+                            (msg_id,)))
+
+    # -- sourdine annoncée par les autres -------------------------------------------
+    def set_peer_mute(self, cid, conv, until):
+        self._x("INSERT OR REPLACE INTO peer_mutes VALUES (?, ?, ?)", (cid, conv, until))
+
+    def peer_mute(self, cid, conv):
+        rows = self._q("SELECT until FROM peer_mutes WHERE contact_id=? AND conv=?", (cid, conv))
+        return rows[0][0] if rows else 0
 
     def set_read(self, msg_id, cid, ts):
         """Lu par ``cid`` (donc distribué aussi) ; renvoie True si c'est nouveau."""

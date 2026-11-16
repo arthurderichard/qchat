@@ -39,6 +39,7 @@ RETRY_INTERVAL = 20
 ONLINE_TIMEOUT = 75
 MAX_AVATAR = 64 * 1024          # photo de profil ou de groupe (déjà réduite par l'interface)
 AVATAR_RETRY = 300              # délai avant de redemander une photo à un contact
+MAX_MUTE = 24 * 3600            # durée maximale d'une sourdine annoncée
 READ_BATCH = 200                # accusés de lecture par paquet
 WIZZ_KINDS = ("wizz", "poke")
 WIZZ_COOLDOWN = 30              # anti-spam : un wizz/poke toutes les 30 s (envoi et affichage)
@@ -751,6 +752,48 @@ class Core:
         self.request_flush(targets)
         return True
 
+    # -- sourdine ----------------------------------------------------------------------
+    def muted_until(self, conv):
+        """Fin de ma sourdine sur ``conv`` (0 si elle n'est pas en sourdine)."""
+        try:
+            until = float(self.store.get_setting(f"mute:{conv}") or 0)
+        except ValueError:
+            return 0
+        return until if until > time.time() else 0
+
+    def set_mute(self, conv, seconds):
+        """Met ``conv`` en sourdine pour ``seconds`` secondes (0 : réactive les notifications) et
+        l'annonce aux autres participants, qui le voient dans la distribution de leurs messages."""
+        until = time.time() + seconds if seconds > 0 else 0
+        self.store.set_setting(f"mute:{conv}", str(until))
+        payload = {"t": "mute", "id": uuid.uuid4().hex, "until": until}
+        targets = self._targets(conv, payload)
+        for cid in targets:
+            self.store.enqueue(cid, payload)
+        self._emit("muted", conv=conv)
+        self.request_flush(targets)
+        return until
+
+    def peer_muted_until(self, cid, conv):
+        """Fin de la sourdine annoncée par ``cid`` sur ``conv`` (0 si aucune en cours)."""
+        until = self.store.peer_mute(cid, conv)
+        return until if until > time.time() else 0
+
+    def _on_mute(self, cid, obj):
+        until = obj.get("until")
+        if not isinstance(until, (int, float)) or isinstance(until, bool) or until < 0:
+            return
+        until = min(until, time.time() + MAX_MUTE)
+        gid = obj.get("gid")
+        if gid is not None:
+            if not isinstance(gid, str) or cid not in self.store.group_member_ids(gid):
+                return
+            conv = f"g:{gid}"
+        else:
+            conv = f"c:{cid}"
+        self.store.set_peer_mute(cid, conv, until)
+        self._emit("peer_mute", contact_id=cid, conv=conv)
+
     def mark_read(self, conv):
         """La conversation est affichée : ses messages sont lus. Chaque auteur en est prévenu
         (accusé de lecture), et lui seul : dans un groupe, les autres membres ne le voient pas."""
@@ -1009,8 +1052,12 @@ class Core:
                     reply = conn.recv()
                     if reply.get("t") != "ack" or reply.get("ref") != payload.get("id"):
                         raise ProtocolError("accusé de réception inattendu")
-                    if msg_id and self.store.set_delivered(msg_id, target, time.time()):
-                        self._emit("receipt", msg_id=msg_id)
+                    if msg_id:
+                        now = time.time()
+                        sent = self.store.get_message(msg_id)
+                        muted = self.peer_muted_until(target, sent.conv) if sent else 0
+                        if self.store.set_delivered(msg_id, target, now, muted or None):
+                            self._emit("receipt", msg_id=msg_id)
                     if self.store.outbox_done(outbox_id, msg_id):
                         self.store.set_message_status(msg_id, "delivered")
                         self._emit("status", msg_id=msg_id, status="delivered")
@@ -1186,6 +1233,8 @@ class Core:
             self._on_delete(cid, obj)
         elif t == "read":
             self._on_read(cid, obj)
+        elif t == "mute":
+            self._on_mute(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")

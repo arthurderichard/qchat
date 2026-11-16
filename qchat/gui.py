@@ -119,6 +119,17 @@ def _when(ts):
     return time.strftime("le %d/%m à %H:%M", t)
 
 
+MUTE_DURATIONS = [(3600, "Pendant 1 heure"), (4 * 3600, "Pendant 4 heures"), (12 * 3600, "Pendant 12 heures")]
+
+
+def _clock(ts):
+    """« 15:30 » aujourd'hui, « demain 03:30 » le lendemain."""
+    t = time.localtime(ts)
+    if t[:3] == time.localtime()[:3]:
+        return time.strftime("%H:%M", t)
+    return time.strftime("demain %H:%M" if t[:3] == time.localtime(time.time() + 86400)[:3] else "%d/%m %H:%M", t)
+
+
 RUN_GAP = 10 * 60           # au-delà, un nouveau message du même auteur reprend photo et nom
 
 INTERACTIONS = [("wizz", "⚡  Wizz"), ("poke", "👉  Poke")]   # menu « Interactions » de l'en-tête
@@ -189,7 +200,8 @@ def _scrolled(child, height):
 class ConvRow(Gtk.ListBoxRow):
     """Ligne façon messagerie : avatar, nom, heure, aperçu du dernier message, non-lus."""
 
-    def __init__(self, section, key, name, subtitle, when="", online=False, unread=0, warn=False, image=None):
+    def __init__(self, section, key, name, subtitle, when="", online=False, unread=0, warn=False, image=None,
+                 muted=False):
         super().__init__()
         self.section, self.key = section, key
         box = Gtk.Box(spacing=10, margin=7, margin_start=8, margin_end=10)
@@ -199,7 +211,13 @@ class ConvRow(Gtk.ListBoxRow):
         title = _label(name)
         title.set_ellipsize(Pango.EllipsizeMode.END)
         title.set_markup(f"<b>{GLib.markup_escape_text(name)}</b>")
-        top.pack_start(title, True, True, 0)
+        top.pack_start(title, not muted, True, 0)
+        if muted:       # 🔕 juste après le nom
+            icon = Gtk.Image.new_from_icon_name("notifications-disabled-symbolic", Gtk.IconSize.MENU)
+            icon.get_style_context().add_class("muted-icon")
+            icon.set_tooltip_text("Conversation en sourdine")
+            top.pack_start(icon, False, False, 0)
+            top.pack_start(Gtk.Box(), True, True, 0)
         if when:
             top.pack_end(_label(when, "time"), False, False, 0)
         bottom = Gtk.Box(spacing=6)
@@ -207,7 +225,7 @@ class ConvRow(Gtk.ListBoxRow):
         sub.set_ellipsize(Pango.EllipsizeMode.END)
         bottom.pack_start(sub, True, True, 0)
         if unread:
-            bottom.pack_end(_label(str(unread), "badge", xalign=0.5), False, False, 0)
+            bottom.pack_end(_label(str(unread), "badge muted" if muted else "badge", xalign=0.5), False, False, 0)
         texts.pack_start(top, False, False, 0)
         texts.pack_start(bottom, False, False, 0)
         box.pack_start(texts, True, True, 0)
@@ -349,6 +367,16 @@ class MainWindow(Gtk.ApplicationWindow):
         self.interactions_btn.get_style_context().add_class("interactions-btn")
         self.interactions_btn.set_no_show_all(True)
         top.pack_start(self.interactions_btn, False, False, 0)
+        mute_action = Gio.SimpleAction.new("mute", GLib.VariantType.new("s"))
+        mute_action.connect("activate", lambda _a, v: self._set_mute(int(v.get_string())))
+        self.add_action(mute_action)
+        self.mute_btn = Gtk.MenuButton(valign=Gtk.Align.CENTER)
+        self.mute_icon = Gtk.Image.new_from_icon_name("preferences-system-notifications-symbolic",
+                                                      Gtk.IconSize.BUTTON)
+        self.mute_btn.add(self.mute_icon)
+        self.mute_btn.get_style_context().add_class("round")
+        top.pack_start(self.mute_btn, False, False, 0)
+        self._mute_timer = None
         info_btn = Gtk.Button.new_from_icon_name("view-more-symbolic", Gtk.IconSize.BUTTON)
         info_btn.set_tooltip_text("Détails")
         info_btn.set_valign(Gtk.Align.CENTER)
@@ -543,7 +571,8 @@ class MainWindow(Gtk.ApplicationWindow):
             n = len(store.group_member_ids(g.gid)) + 1
             self.sidebar.add(ConvRow("group", g.conv, g.name, self._preview(m) if m else f"{n} membres",
                                      when=_short_time(m.ts) if m else "", unread=unread,
-                                     image=self.core.avatar_path(g.conv)))
+                                     image=self.core.avatar_path(g.conv),
+                                     muted=bool(self.core.muted_until(g.conv))))
         for c in sorted(store.contacts(), key=lambda c: (-last_ts(c.conv), c.name.lower())):
             unread = store.unread_count(c.conv)
             total_unread += unread
@@ -551,7 +580,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.sidebar.add(ConvRow("contact", c.conv, c.name, self._contact_subtitle(c, m),
                                      when=_short_time(m.ts) if m else "", online=self.core.is_online(c.id),
                                      unread=unread, warn=bool(c.pending_vk),
-                                     image=self.core.avatar_path(c.conv)))
+                                     image=self.core.avatar_path(c.conv),
+                                     muted=bool(self.core.muted_until(c.conv))))
         for vk, peer in sorted(self.core.discovered.items(), key=lambda kv: kv[1]["name"].lower()):
             self.sidebar.add(ConvRow("peer", vk, peer["name"], ", ".join(peer["ips"]), online=True))
         self.sidebar.show_all()
@@ -565,6 +595,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.subtitle_label.set_text(self.core.name)
         self.set_title(f"QChat{count}")
         self._refresh_chat_header()
+        self._schedule_mute_expiry()
 
     def _on_row_activated(self, _lb, row):
         if row.section == "peer":
@@ -625,6 +656,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         kind, ident = self.current.split(":", 1)
         self.infobar.hide()
+        self._refresh_mute_button()
         for child in self.chat_avatar.get_children():
             self.chat_avatar.remove(child)
         if kind == "g":
@@ -650,6 +682,10 @@ class MainWindow(Gtk.ApplicationWindow):
                 state = f"<span foreground='{self.app.theme.palette['accent']}'>en ligne</span>"
             else:
                 state = "hors ligne"
+            peer_until = self.core.peer_muted_until(c.id, c.conv)
+            if peer_until:
+                state += GLib.markup_escape_text(
+                    f"  ·  🔕 a mis la conversation en sourdine jusqu'à {_clock(peer_until)}")
             self.chat_sub.set_markup(state)
             if c.pending_vk:
                 self.infobar_label.set_text(
@@ -658,6 +694,51 @@ class MainWindow(Gtk.ApplicationWindow):
                     "poste ayant récupéré l'IP, ou d'une usurpation. Vérifiez l'empreinte avec elle.\n"
                     f"Nouvelle empreinte : {fingerprint(c.pending_vk)}")
                 self.infobar.show_all()
+
+    # -- sourdine -------------------------------------------------------------------
+    def _refresh_mute_button(self):
+        until = self.core.muted_until(self.current) if self.current else 0
+        menu = Gio.Menu()
+        durations = Gio.Menu()
+        for seconds, label in MUTE_DURATIONS:
+            durations.append(label, f"win.mute::{seconds}")
+        menu.append_section("Mettre en sourdine" if not until else "Prolonger la sourdine", durations)
+        if until:
+            off = Gio.Menu()
+            off.append("Réactiver les notifications", "win.mute::0")
+            menu.append_section(None, off)
+        self.mute_btn.set_menu_model(menu)
+        if until:
+            self.mute_icon.set_from_icon_name("notifications-disabled-symbolic", Gtk.IconSize.BUTTON)
+            self.mute_btn.set_tooltip_text(f"En sourdine jusqu'à {_clock(until)} : aucune notification")
+            self.mute_btn.get_style_context().add_class("muted")
+        else:
+            self.mute_icon.set_from_icon_name("preferences-system-notifications-symbolic", Gtk.IconSize.BUTTON)
+            self.mute_btn.set_tooltip_text("Mettre la conversation en sourdine")
+            self.mute_btn.get_style_context().remove_class("muted")
+
+    def _set_mute(self, seconds):
+        if self.current:
+            self.core.set_mute(self.current, seconds)
+
+    def _schedule_mute_expiry(self):
+        """Rafraîchit l'affichage quand la prochaine sourdine (la mienne ou celle d'en face) se termine."""
+        now = time.time()
+        ends = [self.core.muted_until(r.key) for r in self.sidebar.get_children() if r.section != "peer"]
+        if self.current and self.current.startswith("c:"):
+            ends.append(self.core.peer_muted_until(int(self.current[2:]), self.current))
+        ends = [e for e in ends if e > now]
+        if self._mute_timer:
+            GLib.source_remove(self._mute_timer)
+            self._mute_timer = None
+        if ends:
+            delay = int(min(ends) - now) + 1
+            self._mute_timer = GLib.timeout_add_seconds(delay, self._mute_expired)
+
+    def _mute_expired(self):
+        self._mute_timer = None
+        self.refresh_sidebar()
+        return False
 
     def _sender_name(self, sender_id):
         c = self.core.store.get_contact(sender_id) if sender_id is not None else None
@@ -984,7 +1065,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._fill_reactions(msg_id, box)
         m = self.core.store.get_message(msg_id)
         visible = m and self.current == m.conv and self.is_active() and self.get_visible()
-        if incoming and on and m and m.outgoing and not visible:
+        if incoming and on and m and m.outgoing and not visible and not self.core.muted_until(m.conv):
             c = self.core.store.get_contact(contact_id)
             self.app.notifier.notify(f"{c.name if c else '?'} a réagi {emoji}",
                                      f"à votre message : {m.text}", m.conv)
@@ -1003,7 +1084,17 @@ class MainWindow(Gtk.ApplicationWindow):
         return read, delivered, pending
 
     def _receipt_status(self, m):
-        """(symbole, couleur ou None, info-bulle) de l'état d'un de mes messages."""
+        """(symbole, couleur ou None, info-bulle) de l'état d'un de mes messages ; 🔕 si un destinataire
+        avait mis la conversation en sourdine quand le message lui est parvenu."""
+        sym, color, tip = self._receipt_status_base(m)
+        muted = self.core.store.muted_receipts(m.id)
+        if muted:
+            names = ", ".join(f"{self._sender_name(cid)} (jusqu'à {_clock(until)})" for cid, until in muted.items())
+            sym += " 🔕"
+            tip += f"\nEn sourdine à la réception, sans notification : {names}"
+        return sym, color, tip
+
+    def _receipt_status_base(self, m):
         if m.status == "failed":
             return "⚠", None, "Échec : le fichier à envoyer a disparu"
         read, delivered, pending = self._receipt_groups(m.id)
@@ -1055,6 +1146,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if not m or not m.outgoing:
             return
         read, delivered, pending = self._receipt_groups(msg_id)
+        muted = self.core.store.muted_receipts(msg_id)
         dlg, box = _dialog(self, "Informations sur le message")
         dlg.set_default_size(380, -1)
         dlg.get_style_context().add_class("qchat")
@@ -1082,6 +1174,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
                 texts.pack_start(_label(name), False, False, 0)
                 detail = fmt.format(_when(ts)) if fmt else "pas encore distribué (poste injoignable)"
+                if cid in muted:
+                    detail += f" · 🔕 en sourdine jusqu'à {_clock(muted[cid])}, non notifié"
                 texts.pack_start(_label(detail, "meta"), False, False, 0)
                 row.pack_start(texts, True, True, 0)
                 mark = _label(icon, "receipt-read" if people is read else "meta")
@@ -1606,7 +1700,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._append_message(m)
         if visible:
             self.core.mark_read(m.conv)
-        if incoming and not visible:
+        if incoming and not visible and not self.core.muted_until(m.conv):
             sender = self._sender_name(m.sender_id)
             title = sender
             if m.conv.startswith("g:"):
@@ -2989,8 +3083,8 @@ class QChatApp(Gtk.Application):
 
     def _show_wizz(self, contact_id, conv, kind):
         c = self.core.store.get_contact(contact_id)
-        if not c:
-            return
+        if not c or self.core.muted_until(conv):
+            return      # conversation en sourdine : le wizz reste noté dans la conversation
         name = c.name
         if conv.startswith("g:"):
             g = self.core.store.get_group(conv[2:])
@@ -3019,6 +3113,8 @@ class QChatApp(Gtk.Application):
             win.on_deleted(**data)
         elif name == "receipt":
             win.on_receipt(**data)
+        elif name in ("muted", "peer_mute"):
+            win.refresh_sidebar()
         elif name == "wizz":
             self._show_wizz(**data)
         elif name == "key_changed":

@@ -21,6 +21,7 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Wizz** : `/wizz` (ou `/poke`), ou le menu *Interactions* de la conversation, fait surgir chez le destinataire une fenêtre animée et sonore.
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour.
+- **Sourdine** d'une conversation pendant 1 h, 4 h ou 12 h, signalée aux autres participants.
 - **Accusés de distribution et de lecture** : 🕓 en attente, ✓✓ distribué, ✓✓ bleu lu ; dans un groupe, détail de qui a lu.
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
   lancé, avec le nom et l'empreinte de la personne ; un clic pour l'ajouter.
@@ -198,6 +199,13 @@ apparaît au-dessus de la réponse ; cliquez sur la citation pour retrouver l'or
 **Supprimer un message** : clic droit sur l'un de vos messages › *Supprimer*. Chez vous comme chez vos
 destinataires, il est remplacé par « Message supprimé par son auteur » ; son texte, ses versions, ses
 réactions et sa pièce jointe sont effacés.
+
+**Sourdine** : le bouton 🔔 en haut de la conversation (personne ou groupe) coupe ses notifications
+pendant 1 h, 4 h ou 12 h, wizz compris ; *Réactiver les notifications* y met fin plus tôt. La
+conversation porte alors 🔕 dans la liste. Les autres participants en sont informés : en conversation
+directe, l'en-tête indique « 🔕 a mis la conversation en sourdine jusqu'à 15:30 », et chaque message
+qui vous parvient pendant la sourdine porte 🔕 à côté de ses coches chez l'expéditeur (détail au survol
+et dans *Informations*, membre par membre dans un groupe).
 
 **Distribué, lu** : sous chacun de vos messages, 🕓 en attente (destinataire injoignable), ✓✓ gris
 distribué sur son poste, ✓✓ bleu lu (la conversation a été affichée). Dans un groupe, « ✓ 1/3 » ou
