@@ -1,0 +1,18 @@
+[Unit]
+Description=QChat, messagerie chiffrée du réseau local
+Documentation=https://github.com/arthurderichard/qchat
+# Démarré avec la session graphique de chaque utilisateur, arrêté avec elle.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=QCHAT_SERVICE=1
+ExecStart=/usr/bin/qchat --background
+# Relancé en cas de plantage, et après une mise à jour (code 75 demandé par QChat).
+Restart=on-failure
+RestartSec=5
+RestartForceExitStatus=75
+
+[Install]
+WantedBy=graphical-session.target

@@ -33,6 +33,9 @@ chmod 755 "$ROOT/usr/bin/qchat"
 install -D -m 755 "$SRC/packaging/qchat-update" "$ROOT/usr/lib/qchat/qchat-update"
 install -D -m 644 "$SRC/packaging/systemd/qchat-update.service" "$ROOT/usr/lib/systemd/system/qchat-update.service"
 install -D -m 644 "$SRC/packaging/systemd/qchat-update.timer" "$ROOT/usr/lib/systemd/system/qchat-update.timer"
+# Démarrage automatique à l'ouverture de session : service utilisateur systemd (tous les bureaux
+# qui activent graphical-session.target), avec l'entrée XDG autostart en secours.
+install -D -m 644 "$SRC/packaging/systemd/qchat.service" "$ROOT/usr/lib/systemd/user/qchat.service"
 
 install -m 644 "$SRC/data/qchat.svg" "$ROOT/usr/share/icons/hicolor/scalable/apps/qchat.svg"
 
@@ -55,7 +58,7 @@ EOF
 }
 desktop "" > "$ROOT/usr/share/applications/$APP_ID.desktop"
 # Démarrage en arrière-plan à l'ouverture de session, pour recevoir les notifications.
-{ desktop " --background"; echo "X-GNOME-Autostart-enabled=true"; } > "$ROOT/etc/xdg/autostart/$APP_ID.desktop"
+{ desktop " --background --autostart"; echo "X-GNOME-Autostart-enabled=true"; } > "$ROOT/etc/xdg/autostart/$APP_ID.desktop"
 chmod 644 "$ROOT"/usr/share/applications/* "$ROOT"/etc/xdg/autostart/*
 
 # Documentation Debian
@@ -121,6 +124,13 @@ if [ -d /run/systemd/system ]; then
         systemctl start qchat-update.timer || true
     fi
 fi
+# Service utilisateur qchat.service, activé pour tous les utilisateurs à la première installation
+# (ou en venant d'une version qui ne l'avait pas) ; un administrateur peut ensuite le désactiver.
+if [ "$0" != "${0%postinst}" ] && [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then
+    if [ -z "$2" ] || dpkg --compare-versions "$2" lt 1.7.0; then
+        systemctl --global enable qchat.service >/dev/null 2>&1 || true
+    fi
+fi
 exit 0
 EOF
     chmod 755 "$ROOT/DEBIAN/$script"
@@ -130,6 +140,9 @@ cat > "$ROOT/DEBIAN/prerm" <<'EOF'
 set -e
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
     systemctl disable --now qchat-update.timer >/dev/null 2>&1 || true
+fi
+if [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl --global disable qchat.service >/dev/null 2>&1 || true
 fi
 exit 0
 EOF

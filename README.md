@@ -15,11 +15,13 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
 - **Réponse à un message** précis (citation cliquable) et **suppression** de ses propres messages.
 - **Emoji** : sélecteur complet (bouton 😊 de la barre de message) avec recherche en français.
-- **Photos de profil et de groupe**, synchronisées chez tous vos contacts.
+- **Photos de profil et de groupe**, synchronisées chez tous vos contacts, et affichées à côté des
+  messages de chacun dans les groupes.
 - **GIF** : recherche et envoi de GIF depuis la barre de message, sans rien configurer (KLIPY).
 - **Wizz** : `/wizz` (ou `/poke`), ou le menu *Interactions* de la conversation, fait surgir chez le destinataire une fenêtre animée et sonore.
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
-- **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour (🕓 → ✓).
+- **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour.
+- **Accusés de distribution et de lecture** : 🕓 en attente, ✓✓ distribué, ✓✓ bleu lu ; dans un groupe, détail de qui a lu.
 - **Découverte du réseau** (🔍, Ctrl+D) : analyse une plage d'IP et liste les postes où QChat est
   lancé, avec le nom et l'empreinte de la personne ; un clic pour l'ajouter.
 - **Annonces automatiques** : les collègues présents apparaissent aussi seuls dans « Sur le réseau ».
@@ -59,6 +61,22 @@ sudo apt install qchat
 
 QChat apparaît dans le menu des applications et se lance automatiquement en arrière-plan à
 l'ouverture de session suivante. Pour le démarrer tout de suite : `qchat`.
+
+**Démarrage automatique** (depuis la 1.7.0) : QChat est un **service utilisateur systemd**,
+`qchat.service`, activé pour tous les comptes du poste. Il démarre avec la session graphique, quel que
+soit le bureau (GNOME, KDE Plasma, et tout environnement qui active `graphical-session.target`), et
+systemd le relance s'il s'arrête anormalement. Pour les bureaux qui n'activent pas cette cible (XFCE,
+MATE…), l'entrée XDG `/etc/xdg/autostart/fr.qchat.QChat.desktop` prend le relais ; les deux ne lancent
+jamais QChat deux fois.
+
+```bash
+systemctl --user status qchat.service      # état de QChat pour la session en cours
+journalctl --user -u qchat.service         # son journal
+```
+
+Pour qu'un utilisateur ne démarre plus QChat automatiquement : désactivez-le dans les « Applications
+au démarrage » de son bureau (respecté par le service comme par l'entrée XDG), ou
+`systemctl --user mask qchat.service`. Pour tout le poste : `sudo systemctl --global disable qchat.service`.
 
 **Mises à jour automatiques** (depuis la 1.5.0) : le paquet installe un minuteur systemd,
 `qchat-update.timer`, qui interroge le dépôt QChat deux fois par jour au plus : vers 10 h et 15 h
@@ -176,6 +194,13 @@ apparaît au-dessus de la réponse ; cliquez sur la citation pour retrouver l'or
 destinataires, il est remplacé par « Message supprimé par son auteur » ; son texte, ses versions, ses
 réactions et sa pièce jointe sont effacés.
 
+**Distribué, lu** : sous chacun de vos messages, 🕓 en attente (destinataire injoignable), ✓✓ gris
+distribué sur son poste, ✓✓ bleu lu (la conversation a été affichée). Dans un groupe, « ✓ 1/3 » ou
+« ✓✓ 2/3 » indique combien l'ont reçu ou lu ; survolez pour les noms, cliquez (ou clic droit ›
+*Informations*) pour le détail de chaque membre avec l'heure. Seul l'auteur d'un message sait qui l'a
+lu : les autres membres du groupe ne le voient pas. Les messages envoyés avant la 1.7.0, et ceux
+envoyés à un poste plus ancien, n'indiquent que la distribution.
+
 **Mentionner quelqu'un** (groupes) : tapez `@` puis le début de son nom ; choisissez dans la liste
 (↑/↓ puis Entrée ou Tab). `@Prénom` suffit aussi quand le prénom est unique dans le groupe. La
 mention apparaît en couleur, et la personne mentionnée voit le message marqué d'un trait et reçoit
@@ -256,6 +281,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/gui.py`     | interface GTK 3                                             |
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
 | `qchat/emojis.py`  | liste des emoji (noms et mots-clés français fournis par GTK)  |
+| `qchat/session.py` | démarrage automatique (service systemd, entrée XDG)           |
 | `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |
 | `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
 | `qchat/wizz.py`    | fenêtre animée des wizz / poke et son bzzz                  |

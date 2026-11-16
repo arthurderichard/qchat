@@ -17,7 +17,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, emojis, gifs, netutil, updater  # noqa: E402
+from . import __version__, emojis, gifs, netutil, session, updater  # noqa: E402
 from .core import DEFAULT_PORT, MAX_AVATAR, Core, mention_pattern, sniff_mime, valid_emoji  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
@@ -103,6 +103,24 @@ def _avatar(name, small=False, online=False, peer=False, image=None, large=False
 
 
 UPDATE_POLL = int(os.environ.get("QCHAT_UPDATE_POLL", 60))   # s entre deux vérifications de version
+READ_COLOR = "#3d9bff"      # ✓✓ d'un message lu
+
+
+def _when(ts):
+    """« 16:42 » aujourd'hui, « hier 16:42 », sinon « 12/11 16:42 »."""
+    if not ts:
+        return ""
+    t = time.localtime(ts)
+    today = time.localtime()
+    if t[:3] == today[:3]:
+        return time.strftime("à %H:%M", t)
+    if time.localtime(ts + 86400)[:3] == today[:3]:
+        return time.strftime("hier à %H:%M", t)
+    return time.strftime("le %d/%m à %H:%M", t)
+
+
+RUN_GAP = 10 * 60           # au-delà, un nouveau message du même auteur reprend photo et nom
+
 INTERACTIONS = [("wizz", "⚡  Wizz"), ("poke", "👉  Poke")]   # menu « Interactions » de l'en-tête
 WIZZ_COMMANDS = {"/wizz": "wizz", "/poke": "poke"}
 
@@ -216,6 +234,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._editing = None         # msg_id du message en cours de modification
         self._replying = None        # msg_id du message auquel on répond
         self._rows = {}              # msg_id -> ligne de la liste (conversation affichée)
+        self._run_first = {}         # msg_id -> premier d'une suite de messages du même auteur
+        self._prev_msg = None        # dernier message affiché (regroupement par auteur)
         self._replies = {}           # msg_id -> ids des messages affichés qui le citent
         self._sel_label = None       # dernier texte de bulle cliqué (pour Ctrl+C)
         self._react_target = None    # message visé par le sélecteur d'emoji des réactions
@@ -577,6 +597,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._reaction_boxes.clear()
         self._text_labels.clear()
         self._rows.clear()
+        self._run_first.clear()
+        self._prev_msg = None
         self._replies.clear()
         self._sel_label = None
         self._cancel_edit()
@@ -587,7 +609,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for m in self.core.store.messages(conv):
             self._append_message(m)
         self._stick_bottom = True
-        self.core.store.mark_read(conv)
+        self.core.mark_read(conv)
         self.app.notifier.withdraw(conv)
         self.stack.set_visible_child_name("chat")
         self.refresh_sidebar()
@@ -644,13 +666,19 @@ class MainWindow(Gtk.ApplicationWindow):
         day = _day_label(m.ts)
         if day != self._last_day:
             self._last_day = day
+            self._prev_msg = None
             self._add_row(_label(day, "day", xalign=0.5), Gtk.Align.CENTER)
         if m.kind == "system":
+            self._prev_msg = None
             note = _label(m.text, "system", xalign=0.5, wrap=True)
             note.set_max_width_chars(70)
             note.set_justify(Gtk.Justification.CENTER)
             self._add_row(note, Gtk.Align.CENTER)
             return
+        prev = self._prev_msg
+        first = not (prev and prev.sender_id == m.sender_id and m.ts - prev.ts < RUN_GAP)
+        self._run_first[m.id] = first
+        self._prev_msg = m
         self._rows[m.id] = self._add_row(*self._message_widget(m))
 
     def _message_widget(self, m):
@@ -660,14 +688,16 @@ class MainWindow(Gtk.ApplicationWindow):
         ctx.add_class("bubble")
         ctx.add_class("out" if m.outgoing else "in")
         halign = Gtk.Align.END if m.outgoing else Gtk.Align.START
-        if not m.outgoing and m.conv.startswith("g:"):
+        in_group = not m.outgoing and m.conv.startswith("g:")
+        first = self._run_first.get(m.id, True)
+        if in_group and first:
             bubble.pack_start(_label(self._sender_name(m.sender_id), "sender"), False, False, 0)
         if m.deleted is not None:
             ctx.add_class("deleted")
             bubble.pack_start(_label("🚫  Message supprimé par son auteur", "deleted-text"), False, False, 0)
             meta = _label(time.strftime("%H:%M", time.localtime(m.ts)), "meta", xalign=1.0)
             bubble.pack_start(meta, False, False, 0)
-            return bubble, halign
+            return (self._with_avatar(m, bubble, first) if in_group else bubble), halign
         if m.reply_to:
             bubble.pack_start(self._quote_widget(m.reply_to, m.conv), False, False, 0)
             self._replies.setdefault(m.reply_to, set()).add(m.id)
@@ -682,14 +712,33 @@ class MainWindow(Gtk.ApplicationWindow):
             bubble.pack_start(text, False, False, 0)
         meta = _label("", "meta", xalign=1.0)
         meta.set_track_visited_links(False)
-        meta.connect("activate-link", lambda _l, _uri, mid=m.id: self._show_history(mid) or True)
+        meta.connect("activate-link", lambda _l, uri, mid=m.id: (
+            self._show_history(mid) if uri == "history" else self._show_receipts(mid)) or True)
         self._set_meta(meta, m)
         bubble.pack_start(meta, False, False, 0)
         if m.outgoing:
             self._status_labels[m.id] = meta
         if m.kind == "text":
             self._text_labels[m.id] = (text, meta)
-        return self._with_reactions(m, bubble), halign
+        widget = self._with_reactions(m, bubble)
+        return (self._with_avatar(m, widget, first) if in_group else widget), halign
+
+    def _with_avatar(self, m, widget, first):
+        """Groupe : photo de l'auteur à gauche de son message (une fois par suite de messages)."""
+        line = Gtk.Box(spacing=8)
+        if first:
+            c = self.core.store.get_contact(m.sender_id) if m.sender_id is not None else None
+            name = c.name if c else "?"
+            av = _avatar(name, small=True, image=self.core.avatar_path(c.conv) if c else None)
+            av.set_valign(Gtk.Align.START)
+            av.set_tooltip_text(name)
+            av.get_style_context().add_class("msg-avatar")
+        else:
+            av = Gtk.Box()
+        av.set_size_request(36, -1)
+        line.pack_start(av, False, False, 0)
+        line.pack_start(widget, False, False, 0)
+        return line
 
     def _mention_names(self, m):
         """Noms affichables des personnes mentionnées dans ``m`` (prénom compris)."""
@@ -902,6 +951,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if att and os.path.isfile(att.path):
             actions.append(("Enregistrer sous…", lambda _mid, a=att: self._save_file_as(a)))
             actions.append(("Afficher dans le dossier", lambda _mid, a=att: self._show_in_folder(a.path)))
+        if m and m.outgoing and m.deleted is None:
+            actions.append(("Informations (distribution, lecture)", self._show_receipts))
         if m and m.outgoing:
             actions.append(("Supprimer", self._confirm_delete))
         if actions:
@@ -937,27 +988,112 @@ class MainWindow(Gtk.ApplicationWindow):
             self.app.notifier.notify(f"{c.name if c else '?'} a réagi {emoji}",
                                      f"à votre message : {m.text}", m.conv)
 
-    @staticmethod
-    def _set_meta(label, m):
-        status = m.status if m.outgoing else None
-        txt = time.strftime("%H:%M", time.localtime(m.ts))
+    def _receipt_groups(self, msg_id):
+        """(lus, distribués non lus, en attente) : listes de (nom, date, contact_id)."""
+        read, delivered, pending = [], [], []
+        for cid, d, r in self.core.store.receipts(msg_id):
+            name = self._sender_name(cid)
+            if r:
+                read.append((name, r, cid))
+            elif d:
+                delivered.append((name, d, cid))
+            else:
+                pending.append((name, None, cid))
+        return read, delivered, pending
+
+    def _receipt_status(self, m):
+        """(symbole, couleur ou None, info-bulle) de l'état d'un de mes messages."""
+        if m.status == "failed":
+            return "⚠", None, "Échec : le fichier à envoyer a disparu"
+        read, delivered, pending = self._receipt_groups(m.id)
+        total = len(read) + len(delivered) + len(pending)
+        if not total:        # message antérieur au suivi par destinataire
+            if m.status == "pending":
+                return "🕓", None, "En attente : le destinataire n'est pas joignable"
+            return "✓", None, "Distribué"
+        group = m.conv.startswith("g:")
+        if not group:
+            if read:
+                return "✓✓", READ_COLOR, f"Lu {_when(read[0][1])}"
+            if delivered:
+                return "✓✓", None, f"Distribué {_when(delivered[0][1])}, pas encore lu"
+            return "🕓", None, "En attente : le destinataire n'est pas joignable"
+        lines = []
+        for title, people in (("Lu par", read), ("Distribué à", delivered), ("En attente", pending)):
+            if people:
+                lines.append(f"{title} : " + ", ".join(p[0] for p in people))
+        tip = "\n".join(lines) + "\nCliquez pour le détail"
+        if len(read) == total:
+            return "✓✓", READ_COLOR, tip
+        if not pending:
+            sym = f"✓✓ {len(read)}/{total}" if read else "✓✓"
+            return sym, None, tip
+        if read or delivered:
+            return f"✓ {len(read) + len(delivered)}/{total}", None, tip
+        return "🕓", None, tip
+
+    def _set_meta(self, label, m):
+        esc = GLib.markup_escape_text
+        parts = []
+        if m.edited:
+            when = time.strftime("%d/%m à %H:%M", time.localtime(m.edited))
+            tip = f"Modifié le {when} — cliquez pour voir l'historique"
+            parts.append(f"<a href='history' title='{esc(tip)}'>modifié</a>  ")
+        parts.append(esc(time.strftime("%H:%M", time.localtime(m.ts))))
         label.set_tooltip_text(None)
-        if status == "pending":
-            txt += "  🕓"
-            label.set_tooltip_text("En attente : le destinataire n'est pas joignable")
-        elif status == "delivered":
-            txt += "  ✓"
-            label.set_tooltip_text("Remis")
-        elif status == "failed":
-            txt += "  ⚠"
-            label.set_tooltip_text("Échec : le fichier à envoyer a disparu")
-        if not m.edited:
-            label.set_text(txt)
+        if m.outgoing and m.deleted is None:
+            sym, color, tip = self._receipt_status(m)
+            color_attr = f" foreground='{color}' weight='bold'" if color else ""
+            inner = f"<span underline='none'{color_attr}>{esc(sym)}</span>"
+            parts.append(f"  <a href='receipts' title='{esc(tip)}'>{inner}</a>")
+        label.set_markup("".join(parts))
+
+    def _show_receipts(self, msg_id):
+        """Détail de la distribution et de la lecture d'un de mes messages, personne par personne."""
+        m = self.core.store.get_message(msg_id)
+        if not m or not m.outgoing:
             return
-        when = time.strftime("%d/%m à %H:%M", time.localtime(m.edited))
-        tip = f"Modifié le {when} — cliquez pour voir l'historique"
-        label.set_markup(f"<a href='history' title='{GLib.markup_escape_text(tip)}'>modifié</a>  "
-                         + GLib.markup_escape_text(txt))
+        read, delivered, pending = self._receipt_groups(msg_id)
+        dlg, box = _dialog(self, "Informations sur le message")
+        dlg.set_default_size(380, -1)
+        dlg.get_style_context().add_class("qchat")
+        excerpt = _label(self._excerpt(m), "subtitle", wrap=True)
+        excerpt.set_max_width_chars(45)
+        excerpt.set_lines(3)
+        excerpt.set_ellipsize(Pango.EllipsizeMode.END)
+        box.pack_start(excerpt, False, False, 0)
+        box.pack_start(_label(f"Envoyé le {time.strftime('%d/%m/%Y à %H:%M', time.localtime(m.ts))}",
+                              "meta"), False, False, 0)
+        if not (read or delivered or pending):
+            box.pack_start(_label("Ce message date d'avant le suivi de lecture : seule sa distribution "
+                                  "est connue (" + ("distribué" if m.status == "delivered" else "en attente")
+                                  + ").", wrap=True), False, False, 0)
+        for title, icon, people, fmt in (
+                ("Lu par", "✓✓", read, "lu {}"), ("Distribué à", "✓✓", delivered, "distribué {}"),
+                ("En attente", "🕓", pending, None)):
+            if not people:
+                continue
+            box.pack_start(_label(f"{title} ({len(people)})", "receipt-title"), False, False, 0)
+            for name, ts, cid in people:
+                row = Gtk.Box(spacing=10)
+                row.pack_start(_avatar(name, small=True, image=self.core.avatar_path(f"c:{cid}")),
+                               False, False, 0)
+                texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+                texts.pack_start(_label(name), False, False, 0)
+                detail = fmt.format(_when(ts)) if fmt else "pas encore distribué (poste injoignable)"
+                texts.pack_start(_label(detail, "meta"), False, False, 0)
+                row.pack_start(texts, True, True, 0)
+                mark = _label(icon, "receipt-read" if people is read else "meta")
+                row.pack_start(mark, False, False, 0)
+                box.pack_start(row, False, False, 0)
+        dlg.show_all()
+        dlg.connect("response", lambda d, _r: d.destroy())
+
+    def on_receipt(self, msg_id):
+        meta = self._status_labels.get(msg_id)
+        m = self.core.store.get_message(msg_id) if meta else None
+        if m:
+            self._set_meta(meta, m)
 
     def _add_row(self, widget, halign, position=-1):
         widget.set_halign(halign)
@@ -1468,7 +1604,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.current == m.conv:
             self._append_message(m)
         if visible:
-            self.core.store.mark_read(m.conv)
+            self.core.mark_read(m.conv)
         if incoming and not visible:
             sender = self._sender_name(m.sender_id)
             title = sender
@@ -1495,7 +1631,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.is_active():
             self.set_urgency_hint(False)
             if self.current:
-                self.core.store.mark_read(self.current)
+                self.core.mark_read(self.current)
                 self.app.notifier.withdraw(self.current)
                 self.refresh_sidebar()
 
@@ -2545,6 +2681,7 @@ class QChatApp(Gtk.Application):
         self._restore = restore
         self._relaunch_args = list(relaunch_args)
         self._update_version = None
+        self.exit_code = None       # code de sortie imposé (75 : redémarrage par systemd)
         self.core = None
         self.win = None
         self.notifier = None
@@ -2594,6 +2731,16 @@ class QChatApp(Gtk.Application):
             self.quit()
             return
         win = self._ensure_window()
+        pending = self.core.store.get_setting("restart_restore")
+        if pending is not None:      # relancé par systemd après une mise à jour
+            self.core.store.set_setting("restart_restore", None)
+            try:
+                state = json.loads(pending)
+            except ValueError:
+                state = {}
+            if state.get("visible"):
+                self._background = False
+                self._restore = state.get("conv") or self._restore
         if self._background:
             self._background = False
             win.hide()
@@ -2642,8 +2789,16 @@ class QChatApp(Gtk.Application):
         return win is None or not win.has_draft()
 
     def _restart(self):
-        args = list(self._relaunch_args)
         win = self.win
+        if session.under_service():
+            # Service systemd : on sort avec le code 75, systemd relance QChat aussitôt.
+            visible = win is not None and win.get_visible()
+            self.core.store.set_setting("restart_restore", json.dumps(
+                {"visible": visible, "conv": win.current if visible else None}))
+            self.exit_code = session.RESTART_EXIT_CODE
+            self.quit()
+            return
+        args = list(self._relaunch_args)
         if win is not None and win.get_visible():
             if win.current:
                 args += ["--restore", win.current]
@@ -2722,6 +2877,8 @@ class QChatApp(Gtk.Application):
             win.on_edited(**data)
         elif name == "deleted":
             win.on_deleted(**data)
+        elif name == "receipt":
+            win.on_receipt(**data)
         elif name == "wizz":
             self._show_wizz(**data)
         elif name == "key_changed":

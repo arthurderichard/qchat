@@ -7,6 +7,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -15,6 +16,8 @@ import unittest
 from qchat import crypto
 from qchat import core, desktop
 from qchat.core import Connection, Core
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def free_port():
@@ -343,6 +346,44 @@ class CoreTest(unittest.TestCase):
         # en conversation directe, pas de mention
         direct = self.a.core.send_text(f"c:{b_cid}", "@Bob salut")
         self.assertEqual(direct.mentions, [])
+
+    def test_read_receipts_direct(self):
+        cid = self.add(self.a, self.b)
+        msg = self.a.core.send_text(f"c:{cid}", "Tu es là ?")
+        self.assertTrue(wait_for(lambda: self.b.contact(self.a) is not None
+                                 and self.b.core.store.get_message(msg.id) is not None))
+        receipt = lambda: self.a.core.store.receipts(msg.id)   # noqa: E731
+        self.assertTrue(wait_for(lambda: receipt()[0][1] is not None))      # distribué
+        self.assertIsNone(receipt()[0][2])                                    # pas encore lu
+        self.b.core.mark_read(self.b.contact(self.a).conv)
+        self.assertTrue(wait_for(lambda: receipt()[0][2] is not None))      # lu
+        self.assertTrue(any(n == "receipt" for n, _d in self.a.events))
+        # Bob n'a rien à accuser pour un message qu'il a lui-même envoyé
+        own = self.b.core.send_text(self.b.contact(self.a).conv, "Oui")
+        self.assertTrue(wait_for(lambda: self.a.core.store.get_message(own.id) is not None))
+        self.a.core.mark_read(f"c:{cid}")
+        self.assertTrue(wait_for(lambda: self.b.core.store.receipts(own.id)[0][2] is not None))
+
+    def test_read_receipts_group_by_whom(self):
+        b_cid = self.add(self.a, self.b)
+        c_cid = self.add(self.a, self.c)
+        gid = self.a.core.create_group("Équipe", [b_cid, c_cid])
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_group(gid) for n in (self.b, self.c))))
+        msg = self.a.core.send_text(f"g:{gid}", "Réunion à 14 h")
+        self.assertTrue(wait_for(lambda: all(n.core.store.get_message(msg.id) for n in (self.b, self.c))))
+        self.assertTrue(wait_for(lambda: all(d for _c, d, _r in self.a.core.store.receipts(msg.id))))
+        self.c.core.mark_read(f"g:{gid}")
+        read_by = lambda: {c for c, _d, r in self.a.core.store.receipts(msg.id) if r}   # noqa: E731
+        self.assertTrue(wait_for(lambda: read_by() == {c_cid}))
+        # Chloé ne peut pas se faire passer pour Bob, ni accuser un message qui ne lui était pas destiné
+        other = self.a.core.send_text(f"c:{b_cid}", "Message privé pour Bob")
+        a_on_c = self.c.contact(self.a).id
+        self.c.core.store.enqueue(a_on_c, {"t": "read", "id": "r1", "ts": time.time(), "ids": [other.id]})
+        self.c.core.request_flush([a_on_c])
+        time.sleep(1)
+        self.assertEqual([r for _c, _d, r in self.a.core.store.receipts(other.id)], [None])
+        self.b.core.mark_read(f"g:{gid}")
+        self.assertTrue(wait_for(lambda: read_by() == {b_cid, c_cid}))
 
     def test_reply_to_message(self):
         cid = self.add(self.a, self.b)
@@ -730,6 +771,29 @@ class UpdaterTest(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["QCHAT_AUTO_RESTART"] = old
+
+
+class SessionTest(unittest.TestCase):
+    """Démarrage automatique : respect du choix de l'utilisateur (testé dans un processus à part,
+    GLib mémorisant le dossier de configuration)."""
+
+    def _disabled(self, content):
+        with tempfile.TemporaryDirectory() as cfg:
+            if content is not None:
+                os.makedirs(os.path.join(cfg, "autostart"))
+                with open(os.path.join(cfg, "autostart", "fr.qchat.QChat.desktop"), "w") as f:
+                    f.write(content)
+            env = dict(os.environ, XDG_CONFIG_HOME=cfg)
+            out = subprocess.run([sys.executable, "-c", "from qchat import session; "
+                                  "print(session.autostart_disabled_by_user())"],
+                                 env=env, capture_output=True, text=True, cwd=ROOT)
+            return out.stdout.strip()
+
+    def test_autostart_choice(self):
+        self.assertEqual(self._disabled(None), "False")
+        self.assertEqual(self._disabled("[Desktop Entry]\nName=QChat\n"), "False")
+        self.assertEqual(self._disabled("[Desktop Entry]\nHidden=true\n"), "True")
+        self.assertEqual(self._disabled("[Desktop Entry]\nX-GNOME-Autostart-enabled=false\n"), "True")
 
 
 class GifsTest(unittest.TestCase):

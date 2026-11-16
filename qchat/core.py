@@ -39,6 +39,7 @@ RETRY_INTERVAL = 20
 ONLINE_TIMEOUT = 75
 MAX_AVATAR = 64 * 1024          # photo de profil ou de groupe (déjà réduite par l'interface)
 AVATAR_RETRY = 300              # délai avant de redemander une photo à un contact
+READ_BATCH = 200                # accusés de lecture par paquet
 WIZZ_KINDS = ("wizz", "poke")
 WIZZ_COOLDOWN = 30              # anti-spam : un wizz/poke toutes les 30 s (envoi et affichage)
 WIZZ_MAX_AGE = 120              # un wizz reçu en retard (destinataire hors ligne) ne s'affiche plus
@@ -674,6 +675,7 @@ class Core:
         msg = self.store.add_message(msg_id, conv, None, text, ts,
                                      "pending" if targets else "delivered", reply_to=reply_to,
                                      mentions=mentions)
+        self.store.add_recipients(msg_id, targets)
         for cid in targets:
             self.store.enqueue(cid, payload, msg_id)
         self._emit("message", message=msg)
@@ -710,6 +712,7 @@ class Core:
         msg = self.store.add_message(msg_id, conv, None, name, ts,
                                      "pending" if targets else "delivered", kind="file")
         self.store.add_attachment(msg_id, name, size, mime, dest)
+        self.store.add_recipients(msg_id, targets)
         for cid in targets:
             self.store.enqueue(cid, payload, msg_id)
         self._emit("message", message=msg)
@@ -747,6 +750,35 @@ class Core:
         self._emit("edited", msg_id=msg_id, incoming=False)
         self.request_flush(targets)
         return True
+
+    def mark_read(self, conv):
+        """La conversation est affichée : ses messages sont lus. Chaque auteur en est prévenu
+        (accusé de lecture), et lui seul : dans un groupe, les autres membres ne le voient pas."""
+        by_sender = {}
+        for msg_id, sender in self.store.mark_read(conv):
+            by_sender.setdefault(sender, []).append(msg_id)
+        now = time.time()
+        for cid, ids in by_sender.items():
+            for i in range(0, len(ids), READ_BATCH):
+                self.store.enqueue(cid, {"t": "read", "id": uuid.uuid4().hex, "ts": now,
+                                         "ids": ids[i:i + READ_BATCH]})
+        if by_sender:
+            self.request_flush(list(by_sender))
+
+    def _on_read(self, cid, obj):
+        ids, ts = obj.get("ids"), obj.get("ts")
+        if not isinstance(ids, list) or len(ids) > READ_BATCH:
+            return
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            ts = time.time()
+        ts = min(ts, time.time() + 60)
+        for ref in ids:
+            if not (isinstance(ref, str) and _MSG_ID.fullmatch(ref)):
+                continue
+            m = self.store.get_message(ref)
+            # Seul un destinataire du message (enregistré à l'envoi) peut l'accuser lu.
+            if m and m.outgoing and self.store.set_read(ref, cid, ts):
+                self._emit("receipt", msg_id=ref)
 
     def delete_message(self, msg_id):
         """Supprime un de mes messages, chez moi et chez les destinataires (« Message supprimé »)."""
@@ -977,6 +1009,8 @@ class Core:
                     reply = conn.recv()
                     if reply.get("t") != "ack" or reply.get("ref") != payload.get("id"):
                         raise ProtocolError("accusé de réception inattendu")
+                    if msg_id and self.store.set_delivered(msg_id, target, time.time()):
+                        self._emit("receipt", msg_id=msg_id)
                     if self.store.outbox_done(outbox_id, msg_id):
                         self.store.set_message_status(msg_id, "delivered")
                         self._emit("status", msg_id=msg_id, status="delivered")
@@ -1150,6 +1184,8 @@ class Core:
             self._on_wizz(cid, obj)
         elif t == "delete":
             self._on_delete(cid, obj)
+        elif t == "read":
+            self._on_read(cid, obj)
 
     def _on_msg(self, cid, obj):
         msg_id, text, ts = obj.get("id"), obj.get("text"), obj.get("ts")

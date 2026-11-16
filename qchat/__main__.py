@@ -14,7 +14,7 @@ def _relaunch_args(argv):
     for a in argv:
         if skip:
             skip = False
-        elif a == "--background" or a.startswith("--restore="):
+        elif a in ("--background", "--autostart") or a.startswith("--restore="):
             continue
         elif a == "--restore":
             skip = True
@@ -32,16 +32,24 @@ def main():
     parser.add_argument("--no-discovery", action="store_true", help="désactiver la découverte UDP")
     parser.add_argument("--debug", action="store_true", help="journal détaillé")
     parser.add_argument("--restore", metavar="CONV", help=argparse.SUPPRESS)   # après mise à jour
+    parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)  # entrée XDG
     parser.add_argument("--version", action="version", version=f"QChat {__version__}")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    from . import session
+    if args.autostart and (session.autostart_disabled_by_user() or session.service_handles_session()):
+        return 0        # désactivé par l'utilisateur, ou déjà lancé par le service systemd
+    if session.under_service() and session.autostart_disabled_by_user():
+        logging.info("Démarrage automatique désactivé par l'utilisateur")
+        return 0
     from .gui import QChatApp
     app = QChatApp(home=args.home, port=args.port, discovery=not args.no_discovery,
                    background=args.background, restore=args.restore,
                    relaunch_args=_relaunch_args(sys.argv[1:]))
-    return app.run([sys.argv[0]])
+    status = app.run([sys.argv[0]])
+    return app.exit_code if app.exit_code is not None else status
 
 
 if __name__ == "__main__":

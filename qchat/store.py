@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS message_edits (
     ts REAL NOT NULL,               -- date de la modification qui l'a remplacée
     PRIMARY KEY (msg_id, ts)
 );
+CREATE TABLE IF NOT EXISTS receipts (
+    msg_id TEXT NOT NULL,           -- un de mes messages
+    contact_id INTEGER NOT NULL,    -- un de ses destinataires
+    delivered REAL,                 -- date de réception par son poste
+    read REAL,                      -- date de lecture
+    PRIMARY KEY (msg_id, contact_id)
+);
 CREATE TABLE IF NOT EXISTS avatars (
     owner TEXT PRIMARY KEY,         -- 'me', 'vk:<clé publique>' ou 'g:<gid>'
     sha TEXT NOT NULL,              -- SHA-256 de l'image
@@ -372,7 +379,34 @@ class Store:
         return self._q("SELECT COUNT(*) FROM messages WHERE conv=? AND unread=1", (conv,))[0][0]
 
     def mark_read(self, conv):
-        self._x("UPDATE messages SET unread=0 WHERE conv=? AND unread=1", (conv,))
+        """Marque la conversation comme lue ; renvoie [(msg_id, expéditeur)] des messages qui ne
+        l'étaient pas (pour prévenir leurs auteurs)."""
+        with self._lock:
+            rows = self._q("SELECT id, sender_id FROM messages WHERE conv=? AND unread=1 "
+                           "AND sender_id IS NOT NULL AND kind IN ('text', 'file')", (conv,))
+            self._x("UPDATE messages SET unread=0 WHERE conv=? AND unread=1", (conv,))
+            return rows
+
+    # -- accusés de distribution et de lecture ---------------------------------------
+    def add_recipients(self, msg_id, contact_ids):
+        for cid in contact_ids:
+            self._x("INSERT OR IGNORE INTO receipts (msg_id, contact_id) VALUES (?, ?)", (msg_id, cid))
+
+    def set_delivered(self, msg_id, cid, ts):
+        cur = self._x("UPDATE receipts SET delivered=? WHERE msg_id=? AND contact_id=? AND delivered IS NULL",
+                      (ts, msg_id, cid))
+        return cur.rowcount > 0
+
+    def set_read(self, msg_id, cid, ts):
+        """Lu par ``cid`` (donc distribué aussi) ; renvoie True si c'est nouveau."""
+        cur = self._x("UPDATE receipts SET read=?, delivered=COALESCE(delivered, ?) "
+                      "WHERE msg_id=? AND contact_id=? AND read IS NULL", (ts, ts, msg_id, cid))
+        return cur.rowcount > 0
+
+    def receipts(self, msg_id):
+        """[(contact_id, distribué le, lu le)] pour un de mes messages ([] si non suivi)."""
+        return self._q("SELECT contact_id, delivered, read FROM receipts WHERE msg_id=? ORDER BY contact_id",
+                       (msg_id,))
 
     # -- modifications ----------------------------------------------------------
     def edit_message(self, msg_id, text, ts):
