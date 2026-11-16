@@ -125,6 +125,7 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .deleted-text { font-style: italic; color: $muted; }
 .qchat .receipt-title { font-weight: bold; font-size: smaller; color: $muted; margin-top: 6px; }
 .qchat .receipt-read { color: #2f8fe6; font-weight: bold; }
+.qchat .update-title { font-weight: bold; font-size: larger; }
 .qchat .jumbo { font-size: 30px; }
 .qchat .jumbo-xl { font-size: 46px; }
 .qchat .bubble.jumbo-bubble { background-color: transparent; box-shadow: none; padding: 0 4px 2px 4px; }

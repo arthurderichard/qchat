@@ -36,6 +36,8 @@ install -D -m 644 "$SRC/packaging/systemd/qchat-update.timer" "$ROOT/usr/lib/sys
 # Démarrage automatique à l'ouverture de session : service utilisateur systemd (tous les bureaux
 # qui activent graphical-session.target), avec l'entrée XDG autostart en secours.
 install -D -m 644 "$SRC/packaging/systemd/qchat.service" "$ROOT/usr/lib/systemd/user/qchat.service"
+# Règle polkit : chacun peut lancer la mise à jour de QChat (et elle seule) depuis l'application.
+install -D -m 644 "$SRC/packaging/50-qchat-update.rules" "$ROOT/usr/share/polkit-1/rules.d/50-qchat-update.rules"
 
 install -m 644 "$SRC/data/qchat.svg" "$ROOT/usr/share/icons/hicolor/scalable/apps/qchat.svg"
 

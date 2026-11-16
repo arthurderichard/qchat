@@ -281,7 +281,8 @@ class MainWindow(Gtk.ApplicationWindow):
         for mode, label in MODES.items():
             theme_menu.append(label, f"app.theme::{mode}")
         main_menu.append_submenu("Thème", theme_menu)
-        main_menu.append("Redémarrer QChat", "app.restart")
+        main_menu.append("Rechercher des mises à jour…", "app.check-updates")
+        main_menu.append("Redémarrer", "app.restart")
         main_menu.append("Quitter", "app.quit")
         self.main_menu = main_menu
         self.menu_btn = menu_btn = Gtk.MenuButton(menu_model=main_menu)
@@ -1845,6 +1846,144 @@ class AvatarPicker(Gtk.Box):
             dlg.destroy()
 
 
+class UpdateDialog(Gtk.Dialog):
+    """☰ › Rechercher des mises à jour : compare la version en cours à celle du dépôt, propose
+    d'installer la nouvelle (sans mot de passe grâce à la règle polkit du paquet) puis redémarre."""
+
+    def __init__(self, app):
+        super().__init__(title="Mises à jour", transient_for=app.win, modal=True, use_header_bar=True)
+        self.app = app
+        self.set_default_size(400, -1)
+        self.get_style_context().add_class("qchat")
+        box = self.get_content_area()
+        box.set_spacing(12)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{side}")(18)
+        row = Gtk.Box(spacing=12)
+        self.spinner = Gtk.Spinner()
+        row.pack_start(self.spinner, False, False, 0)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.heading = _label("", "update-title", wrap=True)
+        self.detail = _label("", "subtitle", wrap=True)
+        self.heading.set_max_width_chars(40)
+        self.detail.set_max_width_chars(48)
+        texts.pack_start(self.heading, False, False, 0)
+        texts.pack_start(self.detail, False, False, 0)
+        row.pack_start(texts, True, True, 0)
+        box.pack_start(row, False, False, 0)
+        self.actions = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        box.pack_start(self.actions, False, False, 0)
+        self.connect("response", lambda d, _r: d.destroy())
+        self._timer = None
+        self.connect("destroy", lambda *_a: self._timer and GLib.source_remove(self._timer))
+
+    # -- états ---------------------------------------------------------------------
+    def _show(self, title, detail="", busy=False, buttons=()):
+        self.heading.set_text(title)
+        self.detail.set_text(detail)
+        self.detail.set_visible(bool(detail))
+        self.spinner.set_visible(busy)
+        if busy:
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+        for child in self.actions.get_children():
+            child.destroy()
+        for label, callback, primary in buttons:
+            b = Gtk.Button(label=label)
+            if primary:
+                b.get_style_context().add_class("suggested-action")
+            b.connect("clicked", lambda _b, cb=callback: cb())
+            self.actions.pack_start(b, False, False, 0)
+            b.show()
+        self.actions.set_visible(bool(buttons))
+        self.resize(400, 1)
+
+    def _close_button(self, label="Fermer"):
+        return (label, self.destroy, False)
+
+    def run_check(self):
+        self.show_all()
+        self._show("Recherche des mises à jour…", busy=True)
+        pending = updater.pending_update()
+        if pending:      # déjà installée (par le minuteur ou à la main) : il suffit de redémarrer
+            self._offer_restart(pending)
+            return
+
+        def work():
+            try:
+                latest, error = updater.latest_available(), None
+            except updater.UpdateError as e:
+                latest, error = None, str(e)
+            GLib.idle_add(lambda: self._checked(latest, error) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _checked(self, latest, error):
+        if self.get_window() is None:
+            return
+        if error:
+            self._show("Recherche impossible", error, buttons=[self._close_button()])
+        elif not updater.is_newer(latest):
+            self._show("QChat est à jour", f"Vous utilisez la dernière version, la {__version__}.",
+                       buttons=[self._close_button()])
+        elif not updater.can_install():
+            self._show(f"QChat {latest} est disponible",
+                       f"Vous avez la {__version__}. Cette installation de QChat ne se met pas à jour "
+                       "d'elle-même : installez le paquet depuis le dépôt apt.",
+                       buttons=[self._close_button()])
+        else:
+            self._show(f"QChat {latest} est disponible",
+                       f"Vous avez la {__version__}. L'installation prend quelques secondes, puis QChat "
+                       "redémarre ; vos conversations sont conservées.",
+                       buttons=[self._close_button("Plus tard"),
+                                ("Installer et redémarrer", lambda: self._install(latest), True)])
+
+    def _install(self, version):
+        self._show(f"Installation de QChat {version}…", "Téléchargement depuis le dépôt de QChat.", busy=True)
+
+        def work():     # dans un fil : le bureau peut demander un mot de passe sans figer QChat
+            try:
+                updater.start_install()
+                error = None
+            except updater.UpdateError as e:
+                error = str(e)
+            GLib.idle_add(lambda: self._install_started(version, error) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _install_started(self, version, error):
+        if self.get_window() is None:
+            return
+        if error:
+            self._show("Installation impossible", error, buttons=[self._close_button()])
+            return
+        self._started = time.time()
+        self._timer = GLib.timeout_add(1000, self._poll, version)
+
+    def _poll(self, version):
+        state, result = updater.install_state()
+        if state in ("activating", "active", "reloading") and time.time() - self._started < 900:
+            return True
+        self._timer = None
+        installed = updater.pending_update()
+        if installed:
+            self._show(f"QChat {installed} est installé", "Redémarrage…", busy=True)
+            GLib.timeout_add(800, lambda: self.app._restart() and False)
+        else:
+            self._show("La mise à jour n'a pas abouti",
+                       "Détail : sudo journalctl -u qchat-update.service"
+                       + ("" if result == "success" else f" (résultat : {result})"),
+                       buttons=[self._close_button()])
+        return False
+
+    def _offer_restart(self, version):
+        self._show(f"QChat {version} est déjà installé",
+                   f"Vous utilisez encore la {__version__} : redémarrez pour passer à la nouvelle version.",
+                   buttons=[self._close_button("Plus tard"),
+                            ("Redémarrer", self.app._restart, True)])
+
+
 class EmojiPopover(Gtk.Popover):
     """Tous les emoji, rangés par catégorie, avec recherche en français et emoji récents.
     Un clic insère l'emoji dans la zone de saisie, à l'emplacement du curseur."""
@@ -2713,6 +2852,7 @@ class QChatApp(Gtk.Application):
         for name, cb, accel in (
                 ("quit", lambda *_a: self.quit(), "<Primary>q"),
                 ("restart", lambda *_a: self._restart(), None),
+                ("check-updates", lambda *_a: UpdateDialog(self).run_check(), None),
                 ("add-contact", lambda *_a: self._ensure_window().add_contact_dialog(), "<Primary>n"),
                 ("new-group", lambda *_a: self._ensure_window().new_group_dialog(), "<Primary>g"),
                 ("scan", lambda *_a: ScanDialog(self._ensure_window()), "<Primary>d"),

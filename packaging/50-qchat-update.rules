@@ -1,0 +1,11 @@
+// QChat : tout utilisateur connecté localement peut lancer la mise à jour de QChat
+// (qchat-update.service), et uniquement elle, sans mot de passe administrateur.
+// Le service ne met à jour que le paquet qchat, depuis son dépôt apt signé.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "qchat-update.service" &&
+        action.lookup("verb") == "start" &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

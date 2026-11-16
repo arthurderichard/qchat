@@ -87,8 +87,13 @@ rien changer s'il tournait en arrière-plan, sur la même conversation si la fen
 attend pour cela qu'aucun message ne soit en cours de saisie ni aucune fenêtre secondaire ouverte.
 Une notification annonce ensuite la nouvelle version.
 
-**Redémarrer QChat** (menu ☰) relance l'application à la demande, par exemple juste après une mise à
-jour faite à la main avec apt. Quand une version plus récente est installée, le bouton ☰ est mis en
+**Rechercher des mises à jour** (menu ☰) : vérifie tout de suite le dépôt. Si une version plus récente
+existe, *Installer et redémarrer* l'installe (sans mot de passe : une règle polkit fournie par le
+paquet autorise chaque utilisateur connecté à lancer `qchat-update.service`, et uniquement lui) puis
+relance QChat. Si la nouvelle version est déjà installée, il propose simplement de redémarrer.
+
+**Redémarrer** (menu ☰) relance l'application à la demande, par exemple juste après une mise à jour
+faite à la main avec apt. Quand une version plus récente est installée, le bouton ☰ est mis en
 évidence et l'entrée devient « Redémarrer pour passer en X.Y.Z ».
 
 ```bash
