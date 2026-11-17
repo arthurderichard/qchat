@@ -131,6 +131,7 @@ def _clock(ts):
 
 
 RUN_GAP = 10 * 60           # au-delà, un nouveau message du même auteur reprend photo et nom
+PORT_WAIT = 15              # sous le service : délai d'attente d'un port encore occupé
 
 INTERACTIONS = [("wizz", "⚡  Wizz"), ("poke", "👉  Poke")]   # menu « Interactions » de l'en-tête
 WIZZ_COMMANDS = {"/wizz": "wizz", "/poke": "poke"}
@@ -2927,15 +2928,21 @@ class QChatApp(Gtk.Application):
         self.core = Core(home=self._home, port=self._port, discovery=self._discovery,
                          on_event=lambda name, data: GLib.idle_add(self._on_event, name, data))
         try:
-            self.core.start()
+            self._start_core()
         except OSError as e:
+            self.core.stop()
+            self.core = None
+            if session.under_service():
+                # Pas de fenêtre bloquante : on sort en erreur et systemd relance QChat 5 s plus tard.
+                log.error("Port TCP %d indisponible (%s) : nouvel essai par systemd", self._port, e.strerror)
+                self.exit_code = 1
+                return
             dlg = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE,
                                     text="Impossible de démarrer QChat")
             dlg.format_secondary_text(f"Le port TCP {self._port} est indisponible : {e.strerror}.\n"
                                       "QChat est peut-être déjà lancé par un autre utilisateur.")
             dlg.run()
             dlg.destroy()
-            self.core = None
             return
         self.theme = ThemeManager(self.core.store.get_setting("theme", "system"), self._on_theme_changed)
         theme_action = Gio.SimpleAction.new_stateful("theme", GLib.VariantType.new("s"),
@@ -2959,6 +2966,20 @@ class QChatApp(Gtk.Application):
         self.hold()     # reste actif fenêtre fermée, pour les notifications
         self._announce_update()
         GLib.timeout_add_seconds(UPDATE_POLL, self._check_update)
+
+    def _start_core(self):
+        """Ouvre le port ; sous le service, attend un peu qu'il se libère (ancienne session en cours
+        de fermeture, par exemple) avant d'abandonner."""
+        deadline = time.monotonic() + (PORT_WAIT if session.under_service() else 0)
+        while True:
+            try:
+                self.core.start()
+                return
+            except OSError as e:
+                if time.monotonic() >= deadline:
+                    raise
+                log.warning("Port TCP %d indisponible (%s), nouvel essai…", self._port, e.strerror)
+                time.sleep(1)
 
     def do_activate(self):
         if self.core is None:

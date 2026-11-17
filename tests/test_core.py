@@ -824,6 +824,39 @@ class SessionTest(unittest.TestCase):
                                  env=env, capture_output=True, text=True, cwd=ROOT)
             return out.stdout.strip()
 
+    def test_system_account(self):
+        from qchat import session
+        with tempfile.NamedTemporaryFile("w", suffix=".defs") as defs:
+            defs.write("# commentaire\nUID_MIN\t\t\t 2000\n")
+            defs.flush()
+            self.assertTrue(session.system_account(128, defs.name))       # gdm
+            self.assertTrue(session.system_account(1500, defs.name))
+            self.assertFalse(session.system_account(2000, defs.name))
+        self.assertTrue(session.system_account(0, "/nonexistent"))       # root ; défaut UID_MIN 1000
+        self.assertTrue(session.system_account(999, "/nonexistent"))
+        self.assertFalse(session.system_account(1172019865, "/nonexistent"))   # compte du domaine
+
+    def test_busy_port_can_be_retried(self):
+        """Port encore pris (ancienne session) : l'échec ne laisse rien d'ouvert et le même Core
+        démarre dès que le port se libère."""
+        holder = socket.socket()
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("0.0.0.0", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        c = Core(home=tempfile.mkdtemp(), port=port, discovery=False)
+        try:
+            with self.assertRaises(OSError):
+                c.start()
+            self.assertIsNone(c._tcp)
+            holder.close()
+            c.start()
+            with socket.create_connection(("127.0.0.1", port), timeout=2):
+                pass
+        finally:
+            holder.close()
+            c.stop()
+
     def test_autostart_choice(self):
         self.assertEqual(self._disabled(None), "False")
         self.assertEqual(self._disabled("[Desktop Entry]\nName=QChat\n"), "False")

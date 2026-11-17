@@ -4,12 +4,16 @@ Documentation=https://github.com/arthurderichard/qchat
 # Démarré avec la session graphique de chaque utilisateur, arrêté avec elle.
 PartOf=graphical-session.target
 After=graphical-session.target
+# Pas pour les comptes système : l'écran de connexion (utilisateur gdm) a lui aussi une session
+# graphique, et un QChat lancé là prendrait le port 45455 au moment où la personne se connecte.
+ConditionUser=!@system
 
 [Service]
 Type=simple
 Environment=QCHAT_SERVICE=1
 ExecStart=/usr/bin/qchat --background
-# Relancé en cas de plantage, et après une mise à jour (code 75 demandé par QChat).
+# Relancé en cas de plantage ou de port occupé (QChat attend 15 s puis sort en erreur),
+# et après une mise à jour (code 75 demandé par QChat).
 Restart=on-failure
 RestartSec=5
 RestartForceExitStatus=75

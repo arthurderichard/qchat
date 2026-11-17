@@ -68,7 +68,9 @@ l'ouverture de session suivante. Pour le démarrer tout de suite : `qchat`.
 soit le bureau (GNOME, KDE Plasma, et tout environnement qui active `graphical-session.target`), et
 systemd le relance s'il s'arrête anormalement. Pour les bureaux qui n'activent pas cette cible (XFCE,
 MATE…), l'entrée XDG `/etc/xdg/autostart/fr.qchat.QChat.desktop` prend le relais ; les deux ne lancent
-jamais QChat deux fois.
+jamais QChat deux fois. Les comptes système, dont l'écran de connexion (`gdm`), sont exclus. Si le port
+45455 est encore occupé au démarrage (session précédente en train de se fermer), le service attend
+15 s puis laisse systemd réessayer, sans fenêtre d'erreur.
 
 ```bash
 systemctl --user status qchat.service      # état de QChat pour la session en cours

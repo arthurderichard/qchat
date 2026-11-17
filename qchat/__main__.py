@@ -39,6 +39,8 @@ def main():
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     from . import session
+    if (args.autostart or session.under_service()) and session.system_account():
+        return 0        # écran de connexion (gdm) ou autre compte système : pas de QChat
     if args.autostart and (session.autostart_disabled_by_user() or session.service_handles_session()):
         return 0        # désactivé par l'utilisateur, ou déjà lancé par le service systemd
     if session.under_service() and session.autostart_disabled_by_user():

@@ -21,6 +21,21 @@ DESKTOP_ID = "fr.qchat.QChat.desktop"
 RESTART_EXIT_CODE = 75          # demande à systemd de relancer QChat (RestartForceExitStatus)
 
 
+def system_account(uid=None, login_defs="/etc/login.defs"):
+    """Compte système (écran de connexion gdm, démons…) : QChat n'a rien à y faire."""
+    uid = os.getuid() if uid is None else uid
+    uid_min = 1000
+    try:
+        with open(login_defs, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "UID_MIN" and parts[1].isdigit():
+                    uid_min = int(parts[1])
+    except OSError:
+        pass
+    return uid < uid_min
+
+
 def under_service():
     """QChat tourne-t-il comme service utilisateur systemd ?"""
     return os.environ.get("QCHAT_SERVICE") == "1"

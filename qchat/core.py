@@ -296,10 +296,15 @@ class Core:
         self._wake.set()
 
     def start(self):
-        self._tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._tcp.bind(("0.0.0.0", self.port))
-        self._tcp.listen(32)
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp.bind(("0.0.0.0", self.port))
+            tcp.listen(32)
+        except OSError:
+            tcp.close()         # port pris : on peut réessayer plus tard avec le même Core
+            raise
+        self._tcp = tcp
         self._spawn(self._accept_loop)
         if self.discovery_enabled:
             try:
