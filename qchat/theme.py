@@ -109,6 +109,7 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .reaction:hover { border-color: $accent; }
 .qchat .reaction.mine { background-color: $accent; color: #ffffff; }
 .qchat .react-btn { padding: 2px; min-height: 0; min-width: 0; color: $muted; }
+modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .qchat .meta link { color: $muted; }
 .qchat .bubble.out .meta link { color: $out_meta; }
 .qchat .edit-bar { background-color: $input_bg; border-radius: 14px; padding: 2px 4px 2px 14px;
@@ -127,6 +128,8 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .receipt-title { font-weight: bold; font-size: smaller; color: $muted; margin-top: 6px; }
 .qchat .receipt-read { color: #2f8fe6; font-weight: bold; }
 .qchat .update-title { font-weight: bold; font-size: larger; }
+.qchat .news-version { font-weight: bold; color: $accent; }
+.qchat .news-bullet { color: $accent; font-weight: bold; }
 .qchat .muted-icon { color: $muted; }
 .qchat .sidebar row:selected .muted-icon { color: $sel_fg; }
 .qchat .round.muted { color: $accent; }

@@ -17,10 +17,11 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, emojis, gifs, netutil, session, updater  # noqa: E402
+from . import __version__, changelog, emojis, gifs, netutil, session, updater  # noqa: E402
 from .core import DEFAULT_PORT, MAX_AVATAR, Core, mention_pattern, sniff_mime, valid_emoji  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
+from .launcher import LauncherBadge  # noqa: E402
 from .notify import Notifier  # noqa: E402
 from .theme import MODES, ThemeManager  # noqa: E402
 from .viewer import AnimatedImage, Viewer, cover, fit, load_animation, viewable_kind  # noqa: E402
@@ -130,6 +131,8 @@ def _clock(ts):
     return time.strftime("demain %H:%M" if t[:3] == time.localtime(time.time() + 86400)[:3] else "%d/%m %H:%M", t)
 
 
+PAGE = 50                   # messages construits à l'ouverture d'une conversation, puis par paquet
+OLDER_MARGIN = 400          # px du haut à partir desquels on charge les messages plus anciens
 RUN_GAP = 10 * 60           # au-delà, un nouveau message du même auteur reprend photo et nom
 PORT_WAIT = 15              # sous le service : délai d'attente d'un port encore occupé
 
@@ -261,6 +264,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self._viewer = None          # visionneuse de pièces jointes ouverte
         self._last_day = None
         self._stick_bottom = True
+        self._older = []            # messages plus anciens pas encore affichés (chargés en remontant)
+        self._older_pending = False
+        self._anchor = None         # (hauteur, position) avant un ajout en haut, pour ne pas sauter
+        self._top = None            # plus ancien message affiché
         self.set_default_size(980, 640)
         self.set_icon_name("qchat")
         self._build()
@@ -301,6 +308,7 @@ class MainWindow(Gtk.ApplicationWindow):
             theme_menu.append(label, f"app.theme::{mode}")
         main_menu.append_submenu("Thème", theme_menu)
         main_menu.append("Convertir les smileys :) en 🙂", "app.smileys")
+        main_menu.append("Nouveautés", "app.whats-new")
         main_menu.append("Rechercher des mises à jour…", "app.check-updates")
         main_menu.append("Redémarrer", "app.restart")
         main_menu.append("Quitter", "app.quit")
@@ -574,24 +582,27 @@ class MainWindow(Gtk.ApplicationWindow):
             return m.ts if m else 0
 
         total_unread = 0
+        badge = 0       # non lus hors conversations en sourdine : compteur de l'icône du dock
         for g in sorted(store.groups(), key=lambda g: -last_ts(g.conv)):
             unread = store.unread_count(g.conv)
             total_unread += unread
+            muted = bool(self.core.muted_until(g.conv))
+            badge += 0 if muted else unread
             m = last_msg(g.conv)
             n = len(store.group_member_ids(g.gid)) + 1
             self.sidebar.add(ConvRow("group", g.conv, g.name, self._preview(m) if m else f"{n} membres",
                                      when=_short_time(m.ts) if m else "", unread=unread,
-                                     image=self.core.avatar_path(g.conv),
-                                     muted=bool(self.core.muted_until(g.conv))))
+                                     image=self.core.avatar_path(g.conv), muted=muted))
         for c in sorted(store.contacts(), key=lambda c: (-last_ts(c.conv), c.name.lower())):
             unread = store.unread_count(c.conv)
             total_unread += unread
+            muted = bool(self.core.muted_until(c.conv))
+            badge += 0 if muted else unread
             m = last_msg(c.conv)
             self.sidebar.add(ConvRow("contact", c.conv, c.name, self._contact_subtitle(c, m),
                                      when=_short_time(m.ts) if m else "", online=self.core.is_online(c.id),
                                      unread=unread, warn=bool(c.pending_vk),
-                                     image=self.core.avatar_path(c.conv),
-                                     muted=bool(self.core.muted_until(c.conv))))
+                                     image=self.core.avatar_path(c.conv), muted=muted))
         for vk, peer in sorted(self.core.discovered.items(), key=lambda kv: kv[1]["name"].lower()):
             self.sidebar.add(ConvRow("peer", vk, peer["name"], ", ".join(peer["ips"]), online=True))
         self.sidebar.show_all()
@@ -604,6 +615,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.title_label.set_markup(f"<b><span foreground='{accent}'>Q</span>Chat{count}</b>")
         self.subtitle_label.set_text(self.core.name)
         self.set_title(f"QChat{count}")
+        self.app.badge.set_count(badge)
         self._refresh_chat_header()
         self._schedule_mute_expiry()
 
@@ -646,9 +658,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self._cancel_edit()
         self._cancel_reply()
         self._last_day = None
+        self._anchor = None
         for row in self.msg_list.get_children():
             self.msg_list.remove(row)
-        for m in self.core.store.messages(conv):
+        # Seuls les derniers messages sont construits à l'ouverture (rapide même pour un long
+        # historique) ; les plus anciens arrivent par paquets en remontant.
+        history = self.core.store.messages(conv)
+        self._older = history[:-PAGE] if len(history) > PAGE else []
+        self._top = history[-PAGE] if len(history) >= PAGE else (history[0] if history else None)
+        for m in history[-PAGE:]:
             self._append_message(m)
         self._stick_bottom = True
         self.core.mark_read(conv)
@@ -754,24 +772,59 @@ class MainWindow(Gtk.ApplicationWindow):
         c = self.core.store.get_contact(sender_id) if sender_id is not None else None
         return c.name if c else "?"
 
-    def _append_message(self, m):
+    def _append_message(self, m, position=-1):
+        """Ajoute ``m`` en bas de la conversation, ou à ``position`` (messages plus anciens) ;
+        renvoie la position suivante."""
         day = _day_label(m.ts)
         if day != self._last_day:
             self._last_day = day
             self._prev_msg = None
-            self._add_row(_label(day, "day", xalign=0.5), Gtk.Align.CENTER)
+            self._add_row(_label(day, "day", xalign=0.5), Gtk.Align.CENTER, position)
+            position = position + 1 if position >= 0 else position
         if m.kind == "system":
             self._prev_msg = None
             note = _label(m.text, "system", xalign=0.5, wrap=True)
             note.set_max_width_chars(70)
             note.set_justify(Gtk.Justification.CENTER)
-            self._add_row(note, Gtk.Align.CENTER)
-            return
+            self._add_row(note, Gtk.Align.CENTER, position)
+            return position + 1 if position >= 0 else position
         prev = self._prev_msg
         first = not (prev and prev.sender_id == m.sender_id and m.ts - prev.ts < RUN_GAP)
         self._run_first[m.id] = first
         self._prev_msg = m
-        self._rows[m.id] = self._add_row(*self._message_widget(m))
+        self._rows[m.id] = self._add_row(*self._message_widget(m), position)
+        return position + 1 if position >= 0 else position
+
+    def _load_older(self):
+        """Construit le paquet de messages précédant ceux affichés, en haut de la liste, sans
+        faire bouger ce que l'on regarde."""
+        self._older_pending = False
+        if not self._older:
+            return False
+        chunk, self._older = self._older[-PAGE:], self._older[:-PAGE]
+        first_shown = self._top
+        self._top = chunk[0]
+        adj = self.msg_scroll.get_vadjustment()
+        self._anchor = (adj.get_upper(), adj.get_value())
+        bottom_state = (self._last_day, self._prev_msg)
+        self._last_day, self._prev_msg = None, None
+        position = 0
+        for m in chunk:
+            position = self._append_message(m, position)
+        last_old, last_day = self._prev_msg, self._last_day
+        self._last_day, self._prev_msg = bottom_state
+        if first_shown is not None:
+            # Même jour des deux côtés : un seul intitulé de jour.
+            header = self.msg_list.get_row_at_index(position)
+            if header is not None and last_day == _day_label(first_shown.ts):
+                header.destroy()
+            # Suite de messages du même auteur à cheval sur les deux paquets : nom et photo une seule fois.
+            if (last_old and last_day == _day_label(first_shown.ts) and first_shown.kind != "system"
+                    and last_old.sender_id == first_shown.sender_id and first_shown.ts - last_old.ts < RUN_GAP
+                    and self._run_first.get(first_shown.id)):
+                self._run_first[first_shown.id] = False
+                self._rerender(first_shown.id)
+        return False
 
     def _message_widget(self, m):
         """Bulle complète d'un message (citation, contenu, heure, réactions) et son alignement."""
@@ -929,6 +982,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _scroll_to(self, msg_id):
         row = self._rows.get(msg_id)
+        if row is None and any(m.id == msg_id for m in self._older):
+            while msg_id not in self._rows and self._older:     # message plus ancien : on le charge
+                self._load_older()
+            GLib.timeout_add(80, lambda: self._scroll_to(msg_id) and False)
+            return
         if row is None or row.get_parent() is None:
             return
         self._stick_bottom = False
@@ -957,26 +1015,23 @@ class MainWindow(Gtk.ApplicationWindow):
         btn.get_style_context().add_class("react-btn")
         btn.set_opacity(0)
         btn.connect("clicked", lambda b: self._react_popover(b, m.id))
-        tools = Gtk.Box(valign=Gtk.Align.CENTER)
-        tools.pack_start(btn, False, False, 0)
-        hover = [btn]
         reply = Gtk.Button.new_from_icon_name("mail-reply-sender-symbolic", Gtk.IconSize.BUTTON)
         reply.set_relief(Gtk.ReliefStyle.NONE)
         reply.set_tooltip_text("Répondre")
         reply.get_style_context().add_class("react-btn")
         reply.set_opacity(0)
         reply.connect("clicked", lambda _b: self._start_reply(m.id))
-        tools.pack_start(reply, False, False, 0)
-        hover.append(reply)
-        if m.outgoing and m.kind == "text":
-            edit = Gtk.Button.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.BUTTON)
-            edit.set_relief(Gtk.ReliefStyle.NONE)
-            edit.set_tooltip_text("Modifier")
-            edit.get_style_context().add_class("react-btn")
-            edit.set_opacity(0)
-            edit.connect("clicked", lambda _b: self._start_edit(m.id))
-            tools.pack_start(edit, False, False, 0)
-            hover.append(edit)
+        more = Gtk.Button(relief=Gtk.ReliefStyle.NONE, tooltip_text="Plus d'options")
+        more.add(Gtk.Image.new_from_gicon(
+            Gio.ThemedIcon.new_with_default_fallbacks("view-more-horizontal-symbolic"), Gtk.IconSize.BUTTON))
+        more.get_style_context().add_class("react-btn")
+        more.set_opacity(0)
+        more.connect("clicked", lambda b: self._options_popover(b, m.id))
+        hover = [btn, reply, more]
+        # De la bulle vers l'extérieur : 😊, ↩, puis « … » au bout.
+        tools = Gtk.Box(valign=Gtk.Align.CENTER)
+        for b in (reversed(hover) if m.outgoing else hover):
+            tools.pack_start(b, False, False, 0)
         line = Gtk.Box(spacing=2)
         for child in ((tools, column) if m.outgoing else (column, tools)):
             line.pack_start(child, False, False, 0)
@@ -987,7 +1042,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ev.connect("enter-notify-event", lambda *_a: [b.set_opacity(1) for b in hover])
         ev.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
                    or [b.set_opacity(0) for b in hover])
-        ev.connect("button-press-event", lambda _w, e: e.button == 3 and self._react_popover(btn, m.id))
+        ev.connect("button-press-event", lambda _w, e: e.button == 3 and self._options_popover(more, m.id))
         return ev
 
     def _fill_reactions(self, msg_id, box):
@@ -1026,9 +1081,18 @@ class MainWindow(Gtk.ApplicationWindow):
         more.get_style_context().add_class("emoji-more")
         more.connect("clicked", lambda _b: (pop.popdown(), self._react_picker(anchor, msg_id)))
         grid.pack_start(more, False, False, 0)
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        content.pack_start(grid, False, False, 0)
+        pop.add(grid)
+        grid.show_all()
+        pop.popup()
+        return True
+
+    def _options_popover(self, anchor, msg_id):
+        """Menu « … » d'un message : répondre, copier, modifier, historique, informations, supprimer."""
         m = self.core.store.get_message(msg_id)
+        if m is None:
+            return True
+        pop = Gtk.Popover(relative_to=anchor)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin=4)
         actions = []
         if m:
             actions.append(("Répondre", self._start_reply))
@@ -1044,13 +1108,17 @@ class MainWindow(Gtk.ApplicationWindow):
             actions.append(("Enregistrer sous…", lambda _mid, a=att: self._save_file_as(a)))
             actions.append(("Afficher dans le dossier", lambda _mid, a=att: self._show_in_folder(a.path)))
         if m and m.outgoing and m.deleted is None:
-            actions.append(("Informations (distribution, lecture)", self._show_receipts))
+            actions.append(("Informations", self._show_receipts))
         if m and m.outgoing:
+            actions.append((None, None))
             actions.append(("Supprimer", self._confirm_delete))
-        if actions:
-            content.pack_start(Gtk.Separator(), False, False, 2)
         for text, fn in actions:
+            if text is None:
+                content.pack_start(Gtk.Separator(), False, False, 3)
+                continue
             row = Gtk.ModelButton(text=text, centered=False)
+            if fn == self._confirm_delete:
+                row.get_style_context().add_class("destructive")
             row.connect("clicked", lambda _b, fn=fn: (pop.popdown(), fn(msg_id)))
             content.pack_start(row, False, False, 0)
         pop.add(content)
@@ -1213,11 +1281,25 @@ class MainWindow(Gtk.ApplicationWindow):
         return row
 
     def _on_adj_changed(self, adj):
+        if self._anchor:        # messages plus anciens ajoutés en haut : on garde la même vue
+            upper, value = self._anchor
+            if adj.get_upper() != upper:
+                self._anchor = None
+                adj.set_value(value + adj.get_upper() - upper)
+            return
         if self._stick_bottom:
             adj.set_value(adj.get_upper() - adj.get_page_size())
+        self._maybe_load_older(adj)
+
+    def _maybe_load_older(self, adj):
+        """Près du haut (ou historique trop court pour remplir la vue) : paquet précédent."""
+        if adj.get_value() < OLDER_MARGIN and self._older and not self._older_pending and not self._anchor:
+            self._older_pending = True
+            GLib.idle_add(self._load_older)
 
     def _on_adj_value(self, adj):
         self._stick_bottom = adj.get_value() >= adj.get_upper() - adj.get_page_size() - 30
+        self._maybe_load_older(adj)
 
     # -- pièces jointes ---------------------------------------------------------
     def _attachment_widget(self, m):
@@ -1805,11 +1887,13 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_active_changed(self, *_a):
         if self.is_active():
+            self.app.maybe_show_whats_new()
             self.set_urgency_hint(False)
             if self.current:
                 self.core.mark_read(self.current)
-                self.app.notifier.withdraw(self.current)
                 self.refresh_sidebar()
+            # QChat est sous les yeux : plus de notification pour ce qui est déjà lu (pastille du dock)
+            self.app.notifier.withdraw_read(self.app._has_unread)
 
     def _on_close(self, *_a):
         self.hide()
@@ -1817,7 +1901,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.core.store.set_setting("background_hint", "1")
             self.app.notifier.notify("QChat reste actif en arrière-plan",
                                      "Vous continuerez à recevoir les notifications. "
-                                     "Utilisez le menu ☰ › Quitter pour fermer complètement.", "")
+                                     "Utilisez le menu ☰ › Quitter pour fermer complètement.", "",
+                                     transient=True)
         return True
 
     # -- dialogues ----------------------------------------------------------
@@ -2019,6 +2104,68 @@ class AvatarPicker(Gtk.Box):
             dlg.format_secondary_text(e.message)
             dlg.run()
             dlg.destroy()
+
+
+class WhatsNewDialog(Gtk.Dialog):
+    """Résumé des nouveautés (CHANGELOG.md), version par version, la plus récente en haut."""
+
+    def __init__(self, parent, releases, since=None):
+        super().__init__(title="Nouveautés", transient_for=parent, modal=True, use_header_bar=True)
+        self.set_default_size(560, -1)
+        self.get_style_context().add_class("qchat")
+        box = self.get_content_area()
+        box.set_spacing(10)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{side}")(18)
+        title = _label(f"Bienvenue dans QChat {__version__}", "update-title")
+        box.pack_start(title, False, False, 0)
+        if since:
+            count = len(releases)
+            intro = (f"Voici ce qui a changé depuis la {since}"
+                     + (f", en {count} versions." if count > 1 else "."))
+        else:
+            intro = "Toutes les évolutions de QChat, de la plus récente à la plus ancienne."
+        box.pack_start(_label(intro, "subtitle", wrap=True), False, False, 0)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=4)
+        for r in releases:
+            section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            head = Gtk.Box(spacing=8)
+            head.pack_start(_label(f"Version {r.version}", "news-version"), False, False, 0)
+            if r.date:
+                head.pack_start(_label(_news_date(r.date), "subtitle"), False, False, 0)
+            section.pack_start(head, False, False, 0)
+            for item in r.items:
+                line = Gtk.Box(spacing=8)
+                bullet = _label("•", "news-bullet")
+                bullet.set_valign(Gtk.Align.START)
+                line.pack_start(bullet, False, False, 0)
+                text = Gtk.Label(xalign=0, wrap=True, selectable=False)
+                text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                text.set_max_width_chars(70)
+                text.set_markup(changelog.to_markup(item))
+                line.pack_start(text, True, True, 0)
+                section.pack_start(line, False, False, 0)
+            content.pack_start(section, False, False, 0)
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        # Les textes à la ligne n'ont pas de hauteur naturelle fiable : estimation, puis défilement.
+        lines = sum(2 + sum(len(item) // 68 + 1 for item in r.items) for r in releases)
+        scroll.set_min_content_height(min(440, 22 * lines + 14 * len(releases)))
+        scroll.add(content)
+        box.pack_start(scroll, True, True, 0)
+        ok = Gtk.Button(label="C'est parti !")
+        ok.get_style_context().add_class("suggested-action")
+        ok.set_halign(Gtk.Align.END)
+        ok.connect("clicked", lambda _b: self.destroy())
+        box.pack_start(ok, False, False, 0)
+        self.connect("response", lambda d, _r: d.destroy())
+        box.show_all()
+
+
+def _news_date(date):
+    """« 2026-11-24 » → « 24/11/2026 »."""
+    parts = date.split("-")
+    return "/".join(reversed(parts)) if len(parts) == 3 else date
 
 
 class UpdateDialog(Gtk.Dialog):
@@ -3161,11 +3308,14 @@ class QChatApp(Gtk.Application):
         smileys = Gio.SimpleAction.new_stateful("smileys", None, GLib.Variant("b", self.smileys_enabled()))
         smileys.connect("change-state", self._on_smileys_action)
         self.add_action(smileys)
-        self.notifier = Notifier(self._on_notification_clicked)
+        self.badge = LauncherBadge(f"{APP_ID}.desktop")
+        self.notifier = Notifier(self._on_notification_clicked, self.core.store)
+        self.notifier.restore(self._has_unread)
         for name, cb, accel in (
                 ("quit", lambda *_a: self.quit(), "<Primary>q"),
                 ("restart", lambda *_a: self._restart(), None),
                 ("check-updates", lambda *_a: UpdateDialog(self).run_check(), None),
+                ("whats-new", lambda *_a: self.show_whats_new(all_versions=True), None),
                 ("add-contact", lambda *_a: self._ensure_window().add_contact_dialog(), "<Primary>n"),
                 ("new-group", lambda *_a: self._ensure_window().new_group_dialog(), "<Primary>g"),
                 ("scan", lambda *_a: ScanDialog(self._ensure_window()), "<Primary>d"),
@@ -3220,20 +3370,48 @@ class QChatApp(Gtk.Application):
             self._ask_name()
 
     def do_shutdown(self):
+        if getattr(self, "badge", None):
+            self.badge.close()
         if self.core:
             self.core.stop()
         Gtk.Application.do_shutdown(self)
 
     # -- mises à jour automatiques ----------------------------------------------
+    def _has_unread(self, conv):
+        return self.core.store.unread_count(conv) > 0
+
     def _announce_update(self):
-        """Après une mise à jour, une notification indique la nouvelle version."""
+        """Après une mise à jour : notification, et fenêtre « Nouveautés » au prochain affichage de
+        QChat (tout de suite s'il revient à l'écran, sinon quand l'utilisateur l'ouvre)."""
         store = self.core.store
         previous = store.get_setting("last_version")
         if previous != __version__:
             store.set_setting("last_version", __version__)
             if previous and updater.is_newer(__version__, previous):
+                # Plusieurs mises à jour sans ouvrir QChat : on part de la plus ancienne non présentée.
+                pending = store.get_setting("whats_new_from") or previous
+                if updater.is_newer(pending, previous):
+                    pending = previous
+                store.set_setting("whats_new_from", pending)
+                news = changelog.since(pending)
+                hint = " Ouvrez QChat pour voir les nouveautés." if news else ""
                 self.notifier.notify("QChat a été mis à jour",
-                                     f"Version {__version__} installée (précédente : {previous}).", None)
+                                     f"Version {__version__} installée (précédente : {previous}).{hint}", None,
+                                     transient=True)
+
+    def show_whats_new(self, all_versions=False):
+        """Fenêtre « Nouveautés » : versions arrivées depuis la dernière présentée, ou tout le journal."""
+        store = self.core.store
+        since = store.get_setting("whats_new_from")
+        store.set_setting("whats_new_from", None)
+        releases = changelog.load() if all_versions else changelog.since(since)
+        if not all_versions and not releases:
+            return
+        WhatsNewDialog(self._ensure_window(), releases, None if all_versions else since).present()
+
+    def maybe_show_whats_new(self):
+        if self.core is not None and self.core.store.get_setting("whats_new_from"):
+            GLib.idle_add(lambda: self.show_whats_new() and False)
 
     def _check_update(self):
         if self._update_version is None:

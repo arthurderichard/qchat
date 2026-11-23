@@ -41,7 +41,12 @@ jobs:
       - name: Créer la Release GitHub
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "QChat $GITHUB_REF_NAME" --generate-notes
+        run: |
+          # Notes de version : la section du CHANGELOG correspondant à ce tag.
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## / { on = ($2 == v) ; next } on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG.md n'a pas de section pour $version"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" dist/*.deb --title "QChat $GITHUB_REF_NAME" --notes-file notes.md
 
       - name: Mettre à jour le dépôt apt (branche gh-pages)
         env:

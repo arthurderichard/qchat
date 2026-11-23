@@ -3,6 +3,7 @@
 Lancement : python3 -m unittest discover -s tests -v
 """
 
+import json
 import os
 import shutil
 import socket
@@ -12,6 +13,8 @@ import tempfile
 import threading
 import time
 import unittest
+
+from gi.repository import GLib
 
 from qchat import crypto
 from qchat import core, desktop
@@ -862,6 +865,169 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self._disabled("[Desktop Entry]\nName=QChat\n"), "False")
         self.assertEqual(self._disabled("[Desktop Entry]\nHidden=true\n"), "True")
         self.assertEqual(self._disabled("[Desktop Entry]\nX-GNOME-Autostart-enabled=false\n"), "True")
+
+
+class NotifierTest(unittest.TestCase):
+    """Les notifications des conversations lues sont retirées, même après un redémarrage, pour
+    que le dock n'affiche pas de pastille sans raison."""
+
+    class FakeProxy:
+        def __init__(self):
+            self.next_id, self.sent, self.closed = 100, [], []
+
+        def call(self, method, params, _flags, _timeout, _cancel, callback, *data):
+            if method == "Notify":
+                values = params.unpack()
+                self.sent.append(values)
+                if not values[1]:               # comme le bureau : même id en cas de remplacement
+                    self.next_id += 1
+                if callback:
+                    callback(self, values[1] or self.next_id, *data)
+            else:
+                self.closed.append(params.unpack()[0])
+
+        def call_finish(self, result):
+            return GLib.Variant("(u)", (result,))
+
+    class FakeStore:
+        def __init__(self):
+            self.settings = {}
+
+        def get_setting(self, key, default=None):
+            return self.settings.get(key, default)
+
+        def set_setting(self, key, value):
+            self.settings[key] = value
+
+    def _notifier(self, store):
+        from qchat.notify import Notifier
+        n = Notifier(lambda conv: None, store)
+        n._proxy = self.FakeProxy()
+        return n
+
+    def test_withdraw_read_and_transient(self):
+        store = self.FakeStore()
+        n = self._notifier(store)
+        n.notify("Tristan", "salut", "c:1")
+        n.notify("Chloé", "coucou", "c:2")
+        n.notify("QChat a été mis à jour", "Version 9", None, transient=True)
+        hints = n._proxy.sent[-1][6]
+        self.assertTrue(hints["transient"])
+        n.withdraw_read(lambda conv: conv == "c:2")      # c:1 lu, c:2 non lu
+        self.assertEqual(sorted(n._proxy.closed), [101, 103])
+        self.assertEqual(json.loads(store.settings["notifications"]), {"c:2": 102})
+
+    def test_restore_after_restart(self):
+        store = self.FakeStore()
+        n = self._notifier(store)
+        n.notify("Tristan", "salut", "c:1")
+        n.notify("Chloé", "coucou", "c:2")
+        n.notify("Info", "…", None)
+        # Redémarrage (mise à jour) : c:1 a été lu entre-temps, c:2 pas encore.
+        m = self._notifier(store)
+        m.restore(lambda conv: conv == "c:2")
+        self.assertEqual(sorted(m._proxy.closed), [101, 103])
+        n2 = m._proxy
+        m.notify("Chloé", "encore", "c:2")
+        self.assertEqual(n2.sent[-1][1], 102)            # remplace l'ancienne au lieu d'empiler
+        m.withdraw("c:2")
+        self.assertIn(102, m._proxy.closed)
+        self.assertEqual(json.loads(store.settings["notifications"]), {})
+
+
+class LauncherBadgeTest(unittest.TestCase):
+    """Compteur de l'icône (com.canonical.Unity.LauncherEntry) : signal Update et méthode Query,
+    sur un bus D-Bus de session lancé pour l'occasion."""
+
+    def setUp(self):
+        if not shutil.which("dbus-daemon"):
+            self.skipTest("dbus-daemon absent")
+        self.daemon = subprocess.Popen(["dbus-daemon", "--session", "--nofork", "--print-address"],
+                                       stdout=subprocess.PIPE, text=True)
+        address = self.daemon.stdout.readline().strip()
+        from gi.repository import Gio
+        flags = (Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                 | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION)
+        self.bus = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+        self.dock = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+
+    def tearDown(self):
+        self.bus.close_sync(None)
+        self.dock.close_sync(None)
+        self.daemon.terminate()
+        self.daemon.wait()
+
+    def test_update_and_query(self):
+        from gi.repository import Gio
+        from qchat.launcher import INTERFACE, LauncherBadge
+        seen = []
+        self.dock.signal_subscribe(None, INTERFACE, "Update", None, None, Gio.DBusSignalFlags.NONE,
+                                   lambda *a: seen.append(a[5].unpack()))
+        badge = LauncherBadge("fr.qchat.Test.desktop", bus=self.bus)
+        ctx = GLib.MainContext.default()
+
+        def spin():
+            end = time.time() + 1
+            while time.time() < end:
+                ctx.iteration(False)
+                time.sleep(0.01)
+
+        badge.set_count(0)          # premier envoi : efface une pastille laissée par un lancement précédent
+        badge.set_count(3)
+        badge.set_count(3)          # inchangé : pas de nouveau signal
+        spin()
+        self.assertEqual([(u, p["count"], p["count-visible"]) for u, p in seen],
+                         [("application://fr.qchat.Test.desktop", 0, False),
+                          ("application://fr.qchat.Test.desktop", 3, True)])
+        result = []
+        self.dock.call(self.bus.get_unique_name(), LauncherBadge.PATH, INTERFACE, "Query", None, None,
+                       Gio.DBusCallFlags.NONE, 2000, None,
+                       lambda c, r: result.append(c.call_finish(r).unpack()))
+        spin()
+        self.assertEqual(result, [("application://fr.qchat.Test.desktop", {"count": 3, "count-visible": True})])
+        badge.close()
+        spin()
+        self.assertEqual(seen[-1][1]["count"], 0)
+
+
+class ChangelogTest(unittest.TestCase):
+    """Journal des nouveautés : chaque version publiée doit y figurer."""
+
+    def test_current_version_documented(self):
+        from qchat import __version__, changelog
+        releases = changelog.load()
+        self.assertTrue(releases, "CHANGELOG.md introuvable ou vide")
+        self.assertEqual(releases[0].version, __version__,
+                         "ajoutez une section « ## <version> — <date> » en tête de CHANGELOG.md")
+        self.assertTrue(releases[0].items)
+        versions = [r.version for r in releases]
+        self.assertEqual(versions, sorted(versions, key=changelog.parse_version, reverse=True))
+
+    def test_parse_and_since(self):
+        from qchat import changelog
+        text = """# Nouveautés
+Introduction ignorée.
+
+## 1.3.0 — 2026-12-01
+- **Gras** : première ligne
+  qui continue ici.
+- Deuxième
+
+## 1.2.1 — 2026-11-20
+- Correctif
+
+## 1.2.0
+- Ancienne
+"""
+        rs = changelog.parse(text)
+        self.assertEqual([(r.version, r.date, len(r.items)) for r in rs],
+                         [("1.3.0", "2026-12-01", 2), ("1.2.1", "2026-11-20", 1), ("1.2.0", "", 1)])
+        self.assertEqual(rs[0].items[0], "**Gras** : première ligne qui continue ici.")
+        self.assertEqual([r.version for r in changelog.since("1.2.0", "1.3.0", rs)], ["1.3.0", "1.2.1"])
+        self.assertEqual([r.version for r in changelog.since("1.2.1", "1.2.1", rs)], [])
+        self.assertEqual([r.version for r in changelog.since(None, "1.2.1", rs)], ["1.2.1", "1.2.0"])
+        self.assertEqual(changelog.to_markup("**a<b** et `x&y` *i* 2*3*4"),
+                         "<b>a&lt;b</b> et <tt>x&amp;y</tt> <i>i</i> 2*3*4")
 
 
 class EmojiShortcutTest(unittest.TestCase):

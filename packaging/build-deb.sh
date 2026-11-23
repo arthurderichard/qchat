@@ -19,6 +19,10 @@ install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/qchat" "$ROOT/usr/sha
 
 # Code (sans caches Python)
 cp -r "$SRC/qchat" "$ROOT/usr/share/qchat/"
+# Journal des nouveautés, lu par la fenêtre « Nouveautés » au premier lancement d'une version.
+grep -q "^## $VERSION " "$SRC/CHANGELOG.md" \
+    || { echo "CHANGELOG.md n'a pas de section « ## $VERSION — … »" >&2; exit 1; }
+install -m 644 "$SRC/CHANGELOG.md" "$ROOT/usr/share/qchat/qchat/CHANGELOG.md"
 find "$ROOT/usr/share/qchat" -name __pycache__ -prune -exec rm -rf {} +
 find "$ROOT/usr/share/qchat" -type f -exec chmod 644 {} +
 
@@ -65,6 +69,7 @@ chmod 644 "$ROOT"/usr/share/applications/* "$ROOT"/etc/xdg/autostart/*
 
 # Documentation Debian
 install -m 644 "$SRC/README.md" "$DOC/README.md"
+install -m 644 "$SRC/CHANGELOG.md" "$DOC/CHANGELOG.md"
 cat > "$DOC/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: qchat

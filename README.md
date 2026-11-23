@@ -5,6 +5,10 @@ Aucun serveur : chaque poste discute directement avec les autres.
 
 - **Chiffrement de bout en bout** de tous les échanges (et confidentialité persistante).
 - **Notifications de bureau** natives (GNOME, KDE, XFCE, Cinnamon, MATE…). Un clic ouvre la conversation.
+  Elles sont retirées dès que la conversation est lue (même après un redémarrage de QChat), et les
+  simples informations ne restent pas dans la liste : pas de pastille sur l'icône du dock sans raison.
+- **Compteur sur l'icône** : nombre de messages non lus (hors conversations en sourdine), via l'interface
+  standard des docks (Ubuntu Dock, Dash to Panel, KDE Plasma, Latte, Plank, elementary…).
 - **Groupes** : création, ajout de membres par n'importe quel membre, départ.
 - **Partage d'images et de fichiers** (jusqu'à 200 Mo) dans les conversations et les groupes,
   chiffré lui aussi de bout en bout.
@@ -91,6 +95,11 @@ rien changer s'il tournait en arrière-plan, sur la même conversation si la fen
 attend pour cela qu'aucun message ne soit en cours de saisie ni aucune fenêtre secondaire ouverte.
 Une notification annonce ensuite la nouvelle version.
 
+**Nouveautés** : au premier affichage de QChat après une mise à jour, une fenêtre résume tout ce qui a
+changé depuis votre version précédente, même si plusieurs versions se sont installées entre-temps.
+☰ › *Nouveautés* la rouvre avec tout l'historique. Le détail est dans [CHANGELOG.md](CHANGELOG.md),
+qui sert aussi de notes de version sur GitHub.
+
 **Rechercher des mises à jour** (menu ☰) : vérifie tout de suite le dépôt. Si une version plus récente
 existe, *Installer et redémarrer* l'installe (sans mot de passe : une règle polkit fournie par le
 paquet autorise chaque utilisateur connecté à lancer `qchat-update.service`, et uniquement lui) puis
@@ -174,11 +183,16 @@ Si le pare-feu `ufw` est actif (`sudo ufw status`), ouvrez ces ports (`sudo ./in
 
 Entrée envoie, Maj+Entrée fait un retour à la ligne.
 
-**Réactions** : survolez un message et cliquez sur 😊 (ou clic droit sur le message), puis choisissez
+**Options d'un message** : au survol d'un message apparaissent 😊 (réagir), ↩ (répondre) et, tout au
+bout, **…** : *Répondre*, *Copier le texte*, *Modifier*, *Historique des modifications*, *Enregistrer
+sous…* / *Afficher dans le dossier* (fichiers), *Informations* et *Supprimer*, selon le message. Un clic
+droit sur le message ouvre le même menu.
+
+**Réactions** : survolez un message et cliquez sur 😊, puis choisissez
 un emoji. Les réactions s'affichent sous le message ; cliquez sur une pastille pour ajouter ou retirer
 la vôtre, survolez-la pour voir qui a réagi. Vous êtes notifié quand quelqu'un réagit à vos messages.
 
-**Modifier un message** : survolez l'un de vos messages et cliquez sur ✏ (ou clic droit › *Modifier*,
+**Modifier un message** : **…** › *Modifier* sur l'un de vos messages (ou clic droit › *Modifier*,
 ou flèche ↑ dans une zone de saisie vide pour le dernier envoyé). Entrée enregistre, Échap annule.
 Le message porte alors la mention « modifié » : cliquez dessus pour voir toutes ses versions.
 Les postes en version antérieure à 1.2.0 continuent d'afficher le texte d'origine.
@@ -222,7 +236,7 @@ envoyés à un poste plus ancien, n'indiquent que la distribution.
 mention apparaît en couleur, et la personne mentionnée voit le message marqué d'un trait et reçoit
 une notification « … vous a mentionné ».
 
-**Réagir** : survolez un message et cliquez sur 😊 (ou clic droit) : ❤️ 👍 👎 😂 😮 😢 🔥, ou **+** pour
+**Réagir** : survolez un message et cliquez sur 😊 : ❤️ 👍 👎 😂 😮 😢 🔥, ou **+** pour
 choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche en grand.
 
 **Emoji** : le bouton 😊, à droite de *GIF*, ouvre la liste de tous les emoji, par catégorie, avec les
@@ -306,6 +320,8 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/store.py`   | base SQLite (contacts, IP, groupes, messages, file d'envoi) |
 | `qchat/netutil.py` | interfaces réseau locales, validation des IP                |
 | `qchat/notify.py`  | notifications D-Bus                                         |
+| `qchat/launcher.py` | compteur de non-lus sur l'icône (LauncherEntry)            |
+| `qchat/changelog.py` | lecture de CHANGELOG.md (fenêtre « Nouveautés »)           |
 | `qchat/gui.py`     | interface GTK 3                                             |
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
 | `qchat/emojis.py`  | liste des emoji (noms et mots-clés français fournis par GTK)  |
