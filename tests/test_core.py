@@ -864,6 +864,50 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self._disabled("[Desktop Entry]\nX-GNOME-Autostart-enabled=false\n"), "True")
 
 
+class EmojiShortcutTest(unittest.TestCase):
+    """Raccourcis tapés dans la saisie : « :mot », « :mot: » et smileys texte."""
+
+    def setUp(self):
+        from qchat import emojis
+        self.e = emojis
+
+    def test_completion_query(self):
+        q = self.e.completion_query
+        self.assertEqual(q(":fe"), (0, "fe"))
+        self.assertEqual(q("salut :feu"), (6, "feu"))
+        self.assertEqual(q(":pouce-haut"), (0, "pouce-haut"))
+        for text in (":f", "a:fe", "10:30", "https://x", "Note: ", ":feu "):
+            self.assertIsNone(q(text), text)
+        self.assertEqual(self.e.closed_shortcode("ok :feu:"), (3, "feu"))
+        self.assertIsNone(self.e.closed_shortcode("ok:feu:"))
+        self.assertIsNone(self.e.closed_shortcode("12:30:"))
+
+    def test_complete_ranking(self):
+        first = lambda q, **kw: self.e.complete(q, **kw)[0].char.replace("\ufe0f", "")
+        self.assertEqual(first("feu"), "🔥")
+        self.assertEqual(first("coeur"), "❤")
+        self.assertEqual(first("cœur"), "❤")           # accents et ligatures indifférents
+        self.assertEqual(first("pouce"), "👍")
+        self.assertEqual(first("mdr"), "😂")
+        self.assertEqual(first("pouce_haut"), "👍")    # plusieurs mots
+        self.assertEqual(first("check"), "✅")
+        self.assertEqual(first("fusee"), "🚀")
+        self.assertEqual(first("bisou", recent=["😽"]), "😘")      # le favori reste devant
+        self.assertEqual(self.e.complete("pleurer", recent=["😭"])[0].char, "😭")   # puis les récents
+        self.assertEqual(self.e.complete("f"), [])
+        self.assertEqual(self.e.complete("zzzzqx"), [])
+        self.assertLessEqual(len(self.e.complete("visage")), 6)
+
+    def test_smileys(self):
+        s = self.e.smiley_before
+        self.assertEqual(s(":)"), (0, "🙂"))
+        self.assertEqual(s("salut :D"), (6, "😄"))
+        self.assertEqual(s("ah\n<3"), (3, "❤️"))
+        self.assertEqual(s("bon (y)"), (4, "👍"))
+        for text in ("salut:)", "http:/", "x", "", "B)ien", ":)) "):
+            self.assertIsNone(s(text), text)
+
+
 class GifsTest(unittest.TestCase):
     GIF = bytes.fromhex("47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002"
                         "02440100") + b";"

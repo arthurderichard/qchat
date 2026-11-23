@@ -14,7 +14,8 @@ Aucun serveur : chaque poste discute directement avec les autres.
 - **Mentions** dans les groupes : `@Tristan` met le message en évidence et prévient la personne.
 - **Modification des messages** envoyés, avec l'historique des versions consultable par tous.
 - **Réponse à un message** précis (citation cliquable) et **suppression** de ses propres messages.
-- **Emoji** : sélecteur complet (bouton 😊 de la barre de message) avec recherche en français.
+- **Emoji** : sélecteur complet (bouton 😊 de la barre de message) avec recherche en français,
+  raccourcis `:feu` au clavier et smileys `:)` convertis en 🙂.
 - **Photos de profil et de groupe**, synchronisées chez tous vos contacts, et affichées à côté des
   messages de chacun dans les groupes.
 - **GIF** : recherche et envoi de GIF depuis la barre de message, sans rien configurer (KLIPY).
@@ -227,6 +228,18 @@ choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche e
 **Emoji** : le bouton 😊, à droite de *GIF*, ouvre la liste de tous les emoji, par catégorie, avec les
 emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
 le premier résultat.
+
+**Emoji au clavier** (depuis la 1.10.0), sans ouvrir le sélecteur :
+
+- **`:mot`** : dès deux lettres après un `:`, une liste propose les emoji correspondants (`:feu` → 🔥,
+  `:pouce` → 👍, `:mdr` → 😂…), les plus courants et vos récents en premier. ↑/↓ pour choisir,
+  Entrée ou Tab pour insérer, Échap pour fermer. `:feu:` (fermé par un `:`) insère directement le
+  premier. Rien ne se déclenche au milieu d'un mot : `10:30` ou `https://` restent tels quels.
+- **Smileys** : `:)` 🙂, `:D` 😄, `;)` 😉, `:(` 😢, `:'(` 😭, `:P` 😛, `:o` 😮, `:*` 😘, `:|` 😐,
+  `:/` 😕, `xD` 😆, `B)` 😎, `^^` 😊, `>:(` 😠, `<3` ❤️, `</3` 💔, `(y)` 👍, `(n)` 👎 sont convertis à
+  la frappe de l'espace (ou à l'envoi s'ils terminent le message), seulement s'ils sont isolés.
+- **Retour arrière** juste après une conversion rétablit le texte tapé, qui est alors envoyé tel quel.
+  ☰ › *Convertir les smileys :) en 🙂* coupe la conversion des smileys.
 
 **Copier** : surlignez un passage d'un message puis Ctrl+C, ou clic droit › *Copier le texte* pour
 le message entier. Les images s'affichent sans nom de fichier ; clic droit pour les enregistrer.

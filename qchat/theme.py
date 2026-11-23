@@ -138,6 +138,7 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .flash .bubble { box-shadow: 0 0 0 3px alpha($accent, 0.55); }
 .qchat .interactions-btn { border-radius: 999px; padding: 2px 10px; margin-right: 4px; }
 .emoji-popover .emoji-cell { font-size: 22px; padding: 2px; }
+.completion-emoji { font-size: 20px; min-width: 28px; }
 .emoji-popover flowboxchild { padding: 1px; border-radius: 8px; min-width: 36px; min-height: 34px; }
 .emoji-popover flowboxchild:hover { background-color: alpha(#808080, 0.18); }
 .emoji-popover .emoji-section { font-weight: bold; font-size: smaller; opacity: 0.7; margin: 6px 4px 2px 4px; }

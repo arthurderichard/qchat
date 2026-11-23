@@ -6,6 +6,7 @@ traductions sont livrées par ``libgtk-3-common`` (/usr/share/gtk-3.0/emoji/<lan
 
 import locale
 import os
+import re
 import unicodedata
 
 import gi
@@ -31,11 +32,31 @@ GROUPS = [
 
 
 class Emoji:
-    __slots__ = ("char", "name", "keywords", "group", "_haystack")
+    __slots__ = ("char", "name", "keywords", "group", "_haystack", "_folded")
 
     def __init__(self, char, name, keywords, group):
         self.char, self.name, self.keywords, self.group = char, name, keywords, group
         self._haystack = fold(" ".join([name, *keywords]))
+        self._folded = None
+
+    def rank(self, query):
+        """Pertinence pour l'auto-complétion (0 = la meilleure), None si ``query`` ne correspond pas."""
+        if self._folded is None:
+            self._folded = (fold(self.name), [fold(k) for k in self.keywords])
+        name, keywords = self._folded
+        if name == query:
+            return 0
+        if query in keywords:
+            return 1
+        if name.startswith(query):
+            return 2
+        if any(w.startswith(query) for w in name.split()):
+            return 3
+        if any(w.startswith(query) for k in keywords for w in k.split()):
+            return 4
+        if query in self._haystack:
+            return 5
+        return None
 
     def matches(self, words):
         return all(w in self._haystack for w in words)
@@ -101,6 +122,96 @@ def load():
 def search(query, emojis=None):
     words = fold(query).split()
     return [e for e in (emojis or load()) if e.matches(words)]
+
+
+# -- raccourcis tapés dans la saisie --------------------------------------------------
+_SHORTCODE = r"[^\W_]?[\w'’-]+"
+_QUERY_RE = re.compile(r"(?:^|(?<=\s)):(" + _SHORTCODE + r")$")
+_CLOSED_RE = re.compile(r"(?:^|(?<=\s)):(" + _SHORTCODE + r"):$")
+COMPLETE_MIN = 2            # lettres à taper après « : » avant de proposer des emoji
+
+
+# Pour un mot courant, l'emoji auquel tout le monde pense, avant les autres correspondances.
+FAVOURITES = {
+    "coeur": "❤️", "amour": "❤️", "love": "❤️", "pouce": "👍", "oui": "👍", "top": "👍", "ok": "👌",
+    "non": "👎", "nul": "👎", "feu": "🔥", "fete": "🥳", "bravo": "👏", "merci": "🙏",
+    "salut": "👋", "coucou": "👋", "bonjour": "👋", "rire": "😂", "mdr": "😂", "lol": "😂",
+    "sourire": "🙂", "content": "😄", "triste": "😢", "pleure": "😢", "colere": "😠",
+    "bisou": "😘", "cool": "😎", "clin": "😉", "surpris": "😮", "choque": "😮", "langue": "😛",
+    "reflechir": "🤔", "hmm": "🤔", "peur": "😱", "fatigue": "😴", "dodo": "😴", "malade": "🤒",
+    "cafe": "☕️", "biere": "🍺", "pizza": "🍕", "gateau": "🎂", "anniversaire": "🎂",
+    "cadeau": "🎁", "soleil": "☀️", "pluie": "🌧️", "check": "✅", "valide": "✅", "croix": "❌",
+    "attention": "⚠️", "fusee": "🚀", "cent": "💯", "applaudir": "👏", "muscle": "💪",
+    "force": "💪", "prier": "🙏", "yeux": "👀", "regarde": "👀", "ange": "😇", "diable": "😈",
+    "caca": "💩", "fantome": "👻", "mort": "💀", "etoile": "⭐", "idee": "💡",
+}
+
+
+def complete(query, recent=(), limit=6, accept=None):
+    """Emoji proposés pour « :query » : nom exact, mot-clé exact, début du nom, d'un mot du nom,
+    d'un mot-clé, puis le reste ; les emoji récents d'abord à pertinence égale."""
+    q = fold(query).replace("_", " ").replace("-", " ").strip()
+    if len(q) < COMPLETE_MIN:
+        return []
+    words = q.split()
+    # mots favoris commençant par la requête : le plus court (le plus proche) en tête
+    hits = sorted((k for k in FAVOURITES if k.startswith(q)), key=len)
+    favourites = {}
+    for k in hits:
+        favourites.setdefault(FAVOURITES[k].replace("\ufe0f", ""), -len(favourites) - 1)
+    favourites = {c: len(favourites) + v for c, v in favourites.items()}
+    recent_pos = {c: i for i, c in enumerate(recent)}
+    scored = []
+    for i, e in enumerate(load()):
+        r = e.rank(q)
+        if r is None and len(words) > 1 and e.matches(words):
+            r = 6                       # « pouce_haut » : tous les mots, dans le désordre
+        favourite = favourites.get(e.char.replace("\ufe0f", ""))
+        if favourite is not None:
+            r = -1 - favourite          # l'emoji « évident » pour ce mot passe devant
+        if r is not None and (accept is None or accept(e.char)):
+            # à pertinence égale : récents d'abord, puis l'ordre Unicode
+            scored.append((r, recent_pos.get(e.char, len(recent_pos)), i, e))
+    scored.sort(key=lambda t: t[:3])
+    return [t[3] for t in scored[:limit]]
+
+
+def completion_query(before):
+    """(début, requête) si le texte avant le curseur finit par « :mot » (après une espace ou en
+    début de ligne), sinon None."""
+    m = _QUERY_RE.search(before)
+    if not m or len(m.group(1)) < COMPLETE_MIN:
+        return None
+    return m.start(), m.group(1)
+
+
+def closed_shortcode(before):
+    """(début, requête) si le texte avant le curseur finit par « :mot: », sinon None."""
+    m = _CLOSED_RE.search(before)
+    return (m.start(), m.group(1)) if m and len(m.group(1)) >= COMPLETE_MIN else None
+
+
+# Smileys « à l'ancienne » convertis à la frappe d'une espace ou à l'envoi.
+SMILEYS = {
+    ":)": "🙂", ":-)": "🙂", "(:": "🙂",
+    ":D": "😄", ":-D": "😄", "xD": "😆", "XD": "😆",
+    ";)": "😉", ";-)": "😉",
+    ":(": "😢", ":-(": "😢", ":'(": "😭",
+    ":p": "😛", ":P": "😛", ":-p": "😛", ":-P": "😛",
+    ":o": "😮", ":O": "😮", ":-o": "😮", ":-O": "😮",
+    ":*": "😘", ":-*": "😘",
+    ":|": "😐", ":-|": "😐", ":/": "😕", ":-/": "😕",
+    "B)": "😎", "B-)": "😎", "^^": "😊", ">:(": "😠",
+    "<3": "❤️", "</3": "💔", "(y)": "👍", "(Y)": "👍", "(n)": "👎", "(N)": "👎",
+}
+
+
+def smiley_before(before):
+    """(début, emoji) si le texte avant le curseur finit par un smiley isolé (après une espace ou en
+    début de texte), sinon None."""
+    start = max(before.rfind(" "), before.rfind("\n"), before.rfind("\t")) + 1
+    emoji = SMILEYS.get(before[start:])
+    return (start, emoji) if emoji else None
 
 
 # -- messages composés uniquement d'emoji ----------------------------------------------

@@ -300,6 +300,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for mode, label in MODES.items():
             theme_menu.append(label, f"app.theme::{mode}")
         main_menu.append_submenu("Thème", theme_menu)
+        main_menu.append("Convertir les smileys :) en 🙂", "app.smileys")
         main_menu.append("Rechercher des mises à jour…", "app.check-updates")
         main_menu.append("Redémarrer", "app.restart")
         main_menu.append("Quitter", "app.quit")
@@ -485,6 +486,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.mention_popover = MentionPopover(self)
         buf.connect("changed", lambda _b: GLib.idle_add(self.mention_popover.update))
         buf.connect("notify::cursor-position", lambda *_a: self.mention_popover.update())
+        self.emoji_completion = EmojiCompletion(self)
+        buf.connect("changed", lambda _b: GLib.idle_add(self.emoji_completion.update, True,
+                                                        priority=GLib.PRIORITY_HIGH))
+        buf.connect("notify::cursor-position", lambda *_a: self.emoji_completion.update())
+        buf.connect_after("insert-text", self._on_input_insert)
+        self._auto_busy = False     # remplacement automatique en cours (ne pas réagir à nos propres modifs)
+        self._last_auto = None      # dernier remplacement automatique, annulable par Retour arrière
+        self._kept_smiley = None    # smiley gardé tel quel (Retour arrière) : pas converti à l'envoi
         composer.pack_start(in_overlay, True, True, 0)
         send = Gtk.Button.new_from_icon_name("document-send-symbolic", Gtk.IconSize.BUTTON)
         send.set_tooltip_text("Envoyer (Entrée) — Maj+Entrée pour un retour à la ligne")
@@ -1469,7 +1478,11 @@ class MainWindow(Gtk.ApplicationWindow):
         return ok
 
     def _on_input_key(self, _w, event):
-        if self.mention_popover.handle_key(event):
+        if not event.is_modifier:
+            if event.keyval == Gdk.KEY_BackSpace and self._undo_auto():
+                return True
+            self._last_auto = None
+        if self.mention_popover.handle_key(event) or self.emoji_completion.handle_key(event):
             return True
         if (event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_v, Gdk.KEY_V)
                 and self.current and self._paste()):
@@ -1492,6 +1505,67 @@ class MainWindow(Gtk.ApplicationWindow):
             self._send()
             return True
         return False
+
+    # -- remplacements automatiques (smileys, :emoji:) ------------------------------------
+    def _on_input_insert(self, buf, location, text, _length):
+        """Une espace ou un retour à la ligne vient d'être tapé : convertit le smiley qui précède."""
+        if self._auto_busy or text not in (" ", "\n") or not self.app.smileys_enabled():
+            return
+        end = location.get_offset() - len(text)
+        line = buf.get_iter_at_offset(end)
+        line.set_line_offset(0)
+        before = buf.get_text(line, buf.get_iter_at_offset(end), False)
+        found = emojis.smiley_before(before)
+        if found:
+            start = line.get_offset() + found[0]
+            # On ne modifie pas le tampon pendant le signal d'insertion : juste après.
+            GLib.idle_add(self._convert_smiley, start, before[found[0]:], found[1], text,
+                          priority=GLib.PRIORITY_HIGH)
+
+    def _convert_smiley(self, start, token, emoji, follow):
+        buf = self.input.get_buffer()
+        stop = start + len(token) + len(follow)
+        current = buf.get_text(buf.get_iter_at_offset(start), buf.get_iter_at_offset(stop), False)
+        cursor = buf.get_iter_at_mark(buf.get_insert()).get_offset()
+        if current == token + follow and cursor == stop:
+            self.auto_replace(start, len(token), emoji, follow)
+        return False
+
+    def auto_replace(self, start, length, new, follow=""):
+        """Remplace ``length`` caractères à partir de ``start`` par ``new`` ; Retour arrière juste après
+        rétablit le texte tapé. ``follow`` : ce qui suit et reste en place (l'espace tapée)."""
+        buf = self.input.get_buffer()
+        begin, end = buf.get_iter_at_offset(start), buf.get_iter_at_offset(start + length)
+        original = buf.get_text(begin, end, False)
+        self._auto_busy = True
+        try:
+            buf.delete(begin, end)
+            buf.insert(buf.get_iter_at_offset(start), new)
+            buf.place_cursor(buf.get_iter_at_offset(start + len(new) + len(follow)))
+        finally:
+            self._auto_busy = False
+        self._last_auto = (start, new + follow, original + follow)
+
+    def _undo_auto(self):
+        if not self._last_auto:
+            return False
+        start, replaced, original = self._last_auto
+        self._last_auto = None
+        buf = self.input.get_buffer()
+        stop = start + len(replaced)
+        if buf.get_has_selection() or buf.get_iter_at_mark(buf.get_insert()).get_offset() != stop:
+            return False
+        if buf.get_text(buf.get_iter_at_offset(start), buf.get_iter_at_offset(stop), False) != replaced:
+            return False
+        self._auto_busy = True
+        try:
+            buf.delete(buf.get_iter_at_offset(start), buf.get_iter_at_offset(stop))
+            buf.insert(buf.get_iter_at_offset(start), original)
+        finally:
+            self._auto_busy = False
+        self.emoji_completion.dismiss_here()
+        self._kept_smiley = start
+        return True
 
     def set_update_ready(self, version):
         """Une version plus récente est installée : le menu propose de redémarrer pour l'appliquer."""
@@ -1516,6 +1590,12 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         buf = self.input.get_buffer()
         text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        if self.app.smileys_enabled():
+            text = text.rstrip()
+            found = emojis.smiley_before(text)
+            if found and found[0] != self._kept_smiley:
+                text = text[:found[0]] + found[1]
+        self._kept_smiley = None
         if self._editing:
             if text.strip():
                 self.core.edit_text(self._editing, text)
@@ -2240,9 +2320,13 @@ class EmojiPopover(Gtk.Popover):
         if e:
             self._insert(e)
 
-    def _insert(self, emoji):
-        recent = [emoji.char] + [c for c in self._recent() if c != emoji.char]
+    def remember(self, char):
+        """Place ``char`` en tête des emoji récents."""
+        recent = [char] + [c for c in self._recent() if c != char]
         self.core.store.set_setting("emoji_recent", json.dumps(recent[:self.RECENT_MAX]))
+
+    def _insert(self, emoji):
+        self.remember(emoji.char)
         self.popdown()
         if self.on_pick:
             self.on_pick(emoji.char)
@@ -2364,6 +2448,131 @@ class MentionPopover(Gtk.Popover):
         buf.delete(begin, end)
         buf.insert(buf.get_iter_at_offset(start), f"@{row.contact.name} ")
         self.popdown()
+        self.win.input.grab_focus()
+
+
+class EmojiCompletion(Gtk.Popover):
+    """« :mot » dans la saisie : emoji correspondants au fil de la frappe (après 2 lettres).
+    ↑/↓ pour choisir, Entrée ou Tab pour insérer, Échap pour fermer ; « :mot: » insère directement
+    le premier. Rien ne se déclenche au milieu d'un mot (« 10:30 », « https:// »)."""
+
+    MAX = 6
+
+    def __init__(self, win):
+        super().__init__(relative_to=win.input)
+        self.win = win
+        self.set_modal(False)
+        self.set_position(Gtk.PositionType.TOP)
+        self.get_style_context().add_class("mention-popover")
+        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
+        self.list.connect("row-activated", lambda _l, row: self._choose(row))
+        self.add(self.list)
+        self._start = None          # position du « : » dans le tampon
+        self._closed_at = None      # « : » pour lequel l'utilisateur a fermé les suggestions
+
+    def _before(self):
+        buf = self.win.input.get_buffer()
+        cur = buf.get_iter_at_mark(buf.get_insert())
+        line = cur.copy()
+        line.set_line_offset(0)
+        return line.get_offset(), buf.get_text(line, cur, False)
+
+    def _query(self):
+        line_start, before = self._before()
+        found = emojis.completion_query(before)
+        return (line_start + found[0], found[1]) if found else None
+
+    def _matches(self, query):
+        picker = self.win.emoji_popover
+        return emojis.complete(query, recent=picker._recent(), limit=self.MAX, accept=picker._renderable)
+
+    def dismiss_here(self):
+        """Ne plus proposer d'emoji pour le « : » sous le curseur (après une annulation)."""
+        found = self._query()
+        self._closed_at = found[0] if found else None
+        self.popdown()
+
+    def update(self, changed=False):
+        if self.win._auto_busy:
+            return False
+        if changed:
+            # « :feu: » : remplacé directement par le premier emoji proposé.
+            line_start, before = self._before()
+            closed = emojis.closed_shortcode(before)
+            if closed and line_start + closed[0] != self._closed_at:
+                found = self._matches(closed[1])
+                if found:
+                    self.popdown()
+                    self.win.emoji_popover.remember(found[0].char)
+                    self.win.auto_replace(line_start + closed[0], len(closed[1]) + 2, found[0].char)
+                    return False
+        found = self._query()
+        if not found or found[0] == self._closed_at:
+            if found is None:
+                self._closed_at = None
+            self.popdown()
+            return False
+        start, query = found
+        matches = self._matches(query)
+        if not matches:
+            self.popdown()
+            return False
+        self._start = start
+        for row in self.list.get_children():
+            row.destroy()
+        for e in matches:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(spacing=10, margin=3)
+            char = _label(e.char, "completion-emoji")
+            box.pack_start(char, False, False, 0)
+            box.pack_start(_label(e.name), False, False, 0)
+            row.add(box)
+            row.emoji = e
+            self.list.add(row)
+        self.list.show_all()
+        self.list.select_row(self.list.get_row_at_index(0))
+        buf = self.win.input.get_buffer()
+        rect = self.win.input.get_iter_location(buf.get_iter_at_offset(start))
+        rect.x, rect.y = self.win.input.buffer_to_window_coords(Gtk.TextWindowType.WIDGET, rect.x, rect.y)
+        self.set_pointing_to(rect)
+        if not self.get_visible():
+            self.popup()
+        return False
+
+    def handle_key(self, event):
+        if not self.get_visible():
+            return False
+        key = event.keyval
+        row = self.list.get_selected_row()
+        rows = self.list.get_children()
+        if key in (Gdk.KEY_Down, Gdk.KEY_Up) and rows:
+            i = rows.index(row) if row in rows else 0
+            i = (i + (1 if key == Gdk.KEY_Down else -1)) % len(rows)
+            self.list.select_row(rows[i])
+            return True
+        if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_Tab) and row:
+            self._choose(row)
+            return True
+        if key == Gdk.KEY_Escape:
+            self._closed_at = self._start
+            self.popdown()
+            return True
+        return False
+
+    def _choose(self, row):
+        found = self._query()
+        self.popdown()
+        if not found:
+            return
+        start, query = found
+        self.win.emoji_popover.remember(row.emoji.char)
+        buf = self.win.input.get_buffer()
+        self.win._auto_busy = True
+        try:
+            buf.insert(buf.get_iter_at_offset(start + 1 + len(query)), " ")
+        finally:
+            self.win._auto_busy = False
+        self.win.auto_replace(start, 1 + len(query), row.emoji.char, " ")
         self.win.input.grab_focus()
 
 
@@ -2949,6 +3158,9 @@ class QChatApp(Gtk.Application):
                                                      GLib.Variant("s", self.theme.mode))
         theme_action.connect("change-state", self._on_theme_action)
         self.add_action(theme_action)
+        smileys = Gio.SimpleAction.new_stateful("smileys", None, GLib.Variant("b", self.smileys_enabled()))
+        smileys.connect("change-state", self._on_smileys_action)
+        self.add_action(smileys)
         self.notifier = Notifier(self._on_notification_clicked)
         for name, cb, accel in (
                 ("quit", lambda *_a: self.quit(), "<Primary>q"),
@@ -3086,6 +3298,13 @@ class QChatApp(Gtk.Application):
         self.core.set_name(entry.get_text().strip() or default or "Anonyme")
         dlg.destroy()
         self.win.refresh_sidebar()
+
+    def smileys_enabled(self):
+        return self.core is not None and self.core.store.get_setting("smileys", "1") == "1"
+
+    def _on_smileys_action(self, action, value):
+        action.set_state(value)
+        self.core.store.set_setting("smileys", "1" if value.get_boolean() else "0")
 
     def _on_theme_action(self, action, value):
         action.set_state(value)
