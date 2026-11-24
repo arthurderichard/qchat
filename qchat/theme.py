@@ -150,8 +150,7 @@ modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .emoji-popover flowboxchild:hover { background-color: alpha(#808080, 0.18); }
 .emoji-popover .emoji-section { font-weight: bold; font-size: smaller; opacity: 0.7; margin: 6px 4px 2px 4px; }
 .emoji-popover .emoji-tab { font-size: 17px; padding: 2px; min-height: 0; min-width: 0; }
-.emoji-popover .emoji-switcher button { padding: 3px 10px; min-height: 0; }
-.emoji-popover .custom-emoji-cell { min-width: 42px; min-height: 42px; }
+popover.reaction-peek .reaction-peek-add { padding: 2px 8px; min-height: 0; margin-top: 4px; }
 .emoji-popover .emoji-add { opacity: 0.7; }
 .emoji-popover .emoji-hint { font-size: smaller; opacity: 0.75; min-height: 18px; }
 .qchat .history-version { background-color: $in_bg; color: $in_fg; border-radius: 12px;

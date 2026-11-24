@@ -245,12 +245,13 @@ choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche e
 emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
 le premier résultat.
 
-**Emojis personnalisés** (depuis la 1.12.0) : volet *Emojis personnalisés* du sélecteur, **+** pour
+**Emojis personnalisés** (depuis la 1.12.0) : en fin de liste du sélecteur (onglet ⭐), **+** pour
 en créer un à partir d'une image (réduite à 128 px ; un GIF animé de moins de 48 Ko reste animé), puis
 donnez-lui un nom. Depuis la zone de saisie, un clic l'envoie seul, en grand ; depuis le 😊 d'un
 message, il sert de réaction. L'image voyage avec la réaction ou le message (vérifiée par son
 empreinte SHA-256), les versions antérieures affichent `:nom:`. Clic droit : *Renommer…* ou *Retirer*.
-Un emoji reçu s'ajoute aux vôtres par clic droit sur sa réaction, ou **…** › *Ajouter à mes emojis*.
+Un emoji reçu s'ajoute aux vôtres avec le bouton *Ajouter à mes emojis* de l'aperçu qui s'affiche au
+survol de sa réaction, par clic droit sur la réaction, ou **…** › *Ajouter à mes emojis* sur un sticker.
 
 **Emoji au clavier** (depuis la 1.10.0), sans ouvrir le sélecteur :
 

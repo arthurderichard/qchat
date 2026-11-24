@@ -6,6 +6,15 @@ version, QChat affiche les sections de toutes les versions installées depuis la
 Format : un titre `## X.Y.Z — AAAA-MM-JJ` par version, puis une liste à puces. `**gras**` et
 `` `code` `` sont mis en forme dans la fenêtre « Nouveautés ».
 
+## 1.12.1 — 2026-11-24
+
+- **Emojis personnalisés dans la liste** : ils sont rangés à la fin de la liste des emoji, sans volet
+  séparé ; l'onglet ⭐ y mène directement, et la recherche les trouve avec les autres.
+- **Ajout en un clic** : en survolant la réaction personnalisée d'un collègue, le bouton
+  *Ajouter à mes emojis* la range dans votre liste.
+- **Survol des réactions sans clignotement** : en arrivant vite sur une réaction, l'emoji agrandi
+  clignotait. Il s'affiche maintenant posément, et reste stable même si la souris tremble au bord.
+
 ## 1.12.0 — 2026-11-24
 
 - **Emojis personnalisés** : le sélecteur d'emoji a deux volets, *Emojis* et *Emojis personnalisés*.

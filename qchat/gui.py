@@ -136,6 +136,8 @@ def _clock(ts):
 PAGE = 50
 REACT_INSET = 12        # retrait des pastilles de réaction depuis le bord de la bulle
 REACT_OVERLAP = 13      # hauteur des pastilles qui chevauche le bas de la bulle
+PEEK_DELAY = 150        # ms sur une pastille avant d'afficher l'emoji en grand
+PEEK_HIDE_DELAY = 120   # ms avant de le masquer (un retour rapide sur la pastille le garde)
 STICKER = 96            # taille d'affichage d'un emoji personnalisé envoyé seul                   # messages construits à l'ouverture d'une conversation, puis par paquet
 OLDER_MARGIN = 400          # px du haut à partir desquels on charge les messages plus anciens
 RUN_GAP = 10 * 60           # au-delà, un nouveau message du même auteur reprend photo et nom
@@ -265,6 +267,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._emoji_arts = {}        # jeton d'emoji personnalisé -> image réduite
         self._emoji_pickers = []     # sélecteurs d'emoji à rafraîchir quand mes emojis changent
         self._peek = None            # bulle d'aperçu d'une réaction survolée
+        self._peek_button = None     # pastille à laquelle elle est rattachée
+        self._peek_timers = {}       # "show" / "hide" -> minuteur en attente
         self._text_labels = {}       # msg_id -> (texte, méta) des bulles affichées
         self._editing = None         # msg_id du message en cours de modification
         self._replying = None        # msg_id du message auquel on répond
@@ -1151,7 +1155,7 @@ class MainWindow(Gtk.ApplicationWindow):
                       or self._unpeek_reaction())
             b.connect("button-press-event", lambda w, e, em=emoji: e.button == 3
                       and self._reaction_menu(w, em))
-            b.connect("destroy", lambda *_a: self._unpeek_reaction())
+            b.connect("destroy", lambda w: self._peek_button is w and self._unpeek_reaction(now=True))
             box.pack_start(b, False, False, 0)
             b.show_all()
             box.sprites[emoji] = sprite
@@ -1171,10 +1175,31 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             spacer.hide()
 
+    def _cancel_peek_timer(self, kind):
+        timer = self._peek_timers.pop(kind, None)
+        if timer:
+            GLib.source_remove(timer)
+
     def _peek_reaction(self, button, sprite, art, names, emoji):
-        """Survol d'une pastille : elle rebondit et l'emoji s'affiche en grand au-dessus, avec les noms."""
-        self._unpeek_reaction()
+        """Survol d'une pastille : elle rebondit et l'emoji s'affiche en grand au-dessus, avec les noms.
+        L'aperçu n'apparaît qu'après un court instant sur la pastille et ne capte pas le pointeur :
+        un passage rapide ne le fait pas clignoter."""
+        self._cancel_peek_timer("hide")
+        if self._peek_button is button and (self._peek is not None or "show" in self._peek_timers):
+            return False                # déjà affiché (ou sur le point de l'être) pour cette pastille
+        self._unpeek_reaction(now=True)
         sprite.bump()
+        self._peek_button = button
+
+        def show():
+            self._peek_timers.pop("show", None)
+            if self._peek_button is button and button.get_mapped():
+                self._show_peek(button, art, names, emoji)
+            return False
+        self._peek_timers["show"] = GLib.timeout_add(PEEK_DELAY, show)
+        return False
+
+    def _show_peek(self, button, art, names, emoji):
         pop = Gtk.Popover(relative_to=button, modal=False, position=Gtk.PositionType.TOP)
         pop.get_style_context().add_class("reaction-peek")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=6)
@@ -1186,15 +1211,47 @@ class MainWindow(Gtk.ApplicationWindow):
         who = _label(", ".join(names), "reaction-peek-who", xalign=0.5, wrap=True)
         who.set_max_width_chars(28)
         box.pack_start(who, False, False, 0)
+        known = self.core.custom_emoji(emoji) if is_custom(emoji) else None
+        if known and not known[2]:
+            add = Gtk.Button(label="Ajouter à mes emojis", halign=Gtk.Align.CENTER)
+            add.set_image(Gtk.Image.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON))
+            add.set_always_show_image(True)
+            add.get_style_context().add_class("reaction-peek-add")
+
+            def keep(btn):
+                self.core.keep_custom_emoji(emoji)
+                btn.set_label("Ajouté à vos emojis")
+                btn.set_image(Gtk.Image.new_from_icon_name("object-select-symbolic", Gtk.IconSize.BUTTON))
+                btn.set_sensitive(False)
+            add.connect("clicked", keep)
+            box.pack_start(add, False, False, 0)
         pop.add(box)
         box.show_all()
+        # La souris peut passer de la pastille à la bulle (pour son bouton) sans la refermer :
+        # la fermeture attend un court instant, annulé dès que le pointeur est sur l'une ou l'autre.
+        pop.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        pop.connect("enter-notify-event", lambda *_a: self._cancel_peek_timer("hide") or False)
+        pop.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
+                    or self._peek is not pop or self._unpeek_reaction())
         pop.popup()
         big.pop()
         self._peek = pop
-        return False
 
-    def _unpeek_reaction(self):
-        pop, self._peek = self._peek, None
+    def _unpeek_reaction(self, now=False):
+        """Ferme l'aperçu ; sans ``now``, après un court délai (annulé si le pointeur revient)."""
+        self._cancel_peek_timer("show")
+        if not now:
+            if self._peek is None:
+                self._peek_button = None
+            elif "hide" not in self._peek_timers:
+                def hide():
+                    self._peek_timers.pop("hide", None)
+                    self._unpeek_reaction(now=True)
+                    return False
+                self._peek_timers["hide"] = GLib.timeout_add(PEEK_HIDE_DELAY, hide)
+            return False
+        self._cancel_peek_timer("hide")
+        pop, self._peek, self._peek_button = self._peek, None, None
         if pop is not None:
             pop.popdown()
             GLib.timeout_add(400, lambda: pop.destroy() or False)
@@ -1205,7 +1262,7 @@ class MainWindow(Gtk.ApplicationWindow):
         known = self.core.custom_emoji(emoji) if is_custom(emoji) else None
         if not known or known[2]:
             return False
-        self._unpeek_reaction()
+        self._unpeek_reaction(now=True)
         pop = Gtk.Popover(relative_to=button)
         row = Gtk.ModelButton(text=f"Ajouter {self._emoji_text(emoji)} à mes emojis", centered=False)
         row.connect("clicked", lambda _b: (pop.popdown(), self.core.keep_custom_emoji(emoji)))
@@ -2545,26 +2602,19 @@ class EmojiPopover(Gtk.Popover):
         self.accept = accept            # filtre optionnel (réactions : emoji acceptés par le protocole)
         self.get_style_context().add_class("emoji-popover")
         self._built = False
-        self._custom_built = False
         self._sections = []         # (titre, flowbox, en-tête, onglet)
+        self.custom_flow = self.custom_header = None
         self._words = []            # mots recherchés (normalisés)
         win._emoji_pickers.append(self)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
-        box.set_size_request(-1, 440)
-        # Deux volets : les emoji Unicode et mes emojis personnalisés (images).
-        self.pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=150)
-        switcher = Gtk.StackSwitcher(stack=self.pages, homogeneous=True)
-        switcher.get_style_context().add_class("emoji-switcher")
-        box.pack_start(switcher, False, False, 0)
+        box.set_size_request(-1, 420)
         self.search = Gtk.SearchEntry(placeholder_text="Rechercher un emoji")
         self.search.connect("search-changed", lambda _e: self._filter())
         self.search.connect("activate", lambda _e: self._insert_first())
         box.pack_start(self.search, False, False, 0)
-
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.tabs = Gtk.Box(spacing=0, homogeneous=True)
         self.tabs.get_style_context().add_class("emoji-tabs")
-        page.pack_start(self.tabs, False, False, 0)
+        box.pack_start(self.tabs, False, False, 0)
         self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.scroll.add(self.list)
@@ -2576,30 +2626,7 @@ class EmojiPopover(Gtk.Popover):
         self.empty.set_no_show_all(True)
         overlay.add_overlay(self.empty)
         overlay.set_overlay_pass_through(self.empty, True)
-        page.pack_start(overlay, True, True, 0)
-        self.pages.add_titled(page, "emojis", "Emojis")
-
-        custom = Gtk.Overlay()
-        self.custom_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        self.custom_flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
-                                       min_children_per_line=7, max_children_per_line=7,
-                                       activate_on_single_click=True, valign=Gtk.Align.START)
-        self.custom_flow.set_filter_func(self._custom_visible)
-        self.custom_flow.connect("child-activated", lambda _f, child: self._on_custom_activated(child))
-        self.custom_scroll.add(self.custom_flow)
-        custom.add(self.custom_scroll)
-        self.custom_empty = _label("", "subtitle", xalign=0.5, wrap=True)
-        self.custom_empty.set_justify(Gtk.Justification.CENTER)
-        self.custom_empty.set_max_width_chars(30)
-        self.custom_empty.set_halign(Gtk.Align.CENTER)
-        self.custom_empty.set_valign(Gtk.Align.CENTER)
-        self.custom_empty.set_no_show_all(True)
-        custom.add_overlay(self.custom_empty)
-        custom.set_overlay_pass_through(self.custom_empty, True)
-        self.pages.add_titled(custom, "custom", "Emojis personnalisés")
-        self.pages.connect("notify::visible-child-name", lambda *_a: self._filter())
-        box.pack_start(self.pages, True, True, 0)
-
+        box.pack_start(overlay, True, True, 0)
         self.hint = _label("", "emoji-hint")
         self.hint.set_ellipsize(Pango.EllipsizeMode.END)
         box.pack_start(self.hint, False, False, 0)
@@ -2612,8 +2639,6 @@ class EmojiPopover(Gtk.Popover):
         if not self._built:
             self._build()
         self._fill_recent()
-        if not self._custom_built:
-            self.refresh_custom()
         self.search.set_text("")
         self._filter()
         self.scroll.get_vadjustment().set_value(0)
@@ -2621,7 +2646,9 @@ class EmojiPopover(Gtk.Popover):
 
     # -- emojis personnalisés -----------------------------------------------------------
     def refresh_custom(self):
-        self._custom_built = True
+        """(Re)remplit la section « Emojis personnalisés », en fin de liste."""
+        if self.custom_flow is None:
+            return                      # pas encore construit : rempli au premier affichage
         for child in self.custom_flow.get_children():
             child.destroy()
         add = Gtk.FlowBoxChild(tooltip_text="Créer un emoji à partir d'une image")
@@ -2637,7 +2664,7 @@ class EmojiPopover(Gtk.Popover):
             child = Gtk.FlowBoxChild(tooltip_text=f":{name}:")
             ev = Gtk.EventBox()
             if isinstance(art, GdkPixbuf.Pixbuf):
-                w, h = fit(art.get_width(), art.get_height(), 30, 30, upscale=True)
+                w, h = fit(art.get_width(), art.get_height(), 28, 28, upscale=True)
                 ev.add(Gtk.Image.new_from_pixbuf(art.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)))
             else:
                 ev.add(Gtk.Label(label=art))
@@ -2649,6 +2676,7 @@ class EmojiPopover(Gtk.Popover):
             child.get_style_context().add_class("custom-emoji-cell")
             self.custom_flow.add(child)
         self.custom_flow.show_all()
+        self.custom_note.set_visible(len(self.custom_flow.get_children()) == 1)
         self._filter()
 
     def _custom_visible(self, child):
@@ -2712,8 +2740,8 @@ class EmojiPopover(Gtk.Popover):
         except ValueError as e:
             self.win._error("Impossible d'ajouter cet emoji", str(e))
             return
-        self.pages.set_visible_child_name("custom")
         self.popup()
+        GLib.timeout_add(250, lambda: self._jump(self.custom_header) or False)
 
     def _rename_custom(self, token, name):
         art = self.win._emoji_art(token)
@@ -2721,14 +2749,18 @@ class EmojiPopover(Gtk.Popover):
         if new:
             self.core.rename_custom_emoji(token, new)
 
-    def _section(self, title, icon):
+    def _section(self, title, icon, custom=False):
         header = _label(title, "emoji-section")
         flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                            min_children_per_line=9, max_children_per_line=9,
                            column_spacing=0, row_spacing=0,
                            activate_on_single_click=True, valign=Gtk.Align.START)
-        flow.connect("child-activated", lambda _f, child: self._insert(child.emoji))
-        flow.set_filter_func(self._visible)
+        if custom:
+            flow.connect("child-activated", lambda _f, child: self._on_custom_activated(child))
+            flow.set_filter_func(self._custom_visible)
+        else:
+            flow.connect("child-activated", lambda _f, child: self._insert(child.emoji))
+            flow.set_filter_func(self._visible)
         self.list.pack_start(header, False, False, 0)
         self.list.pack_start(flow, False, False, 0)
         tab = Gtk.Button(label=icon, relief=Gtk.ReliefStyle.NONE, tooltip_text=title)
@@ -2759,8 +2791,16 @@ class EmojiPopover(Gtk.Popover):
             flow = flows.get(e.group)
             if flow is not None and self._renderable(e.char) and (not self.accept or self.accept(e.char)):
                 flow.add(self._cell(e))
+        # Mes emojis personnalisés en fin de liste, avec leur onglet pour y sauter directement.
+        self.custom_flow = self._section("Emojis personnalisés", "⭐", custom=True)
+        self.custom_header = self._sections[-1][2]
+        self.custom_note = _label("Cliquez sur + pour créer un emoji à partir d'une image.", "emoji-hint")
+        self.custom_note.set_margin_start(4)
+        self.custom_note.set_no_show_all(True)
+        self.list.pack_start(self.custom_note, False, False, 0)
         self.list.show_all()
         self.tabs.show_all()
+        self.refresh_custom()
 
     def _renderable(self, char):
         """Écarte les emoji que la police du poste ne sait pas dessiner en un seul glyphe
@@ -2797,23 +2837,12 @@ class EmojiPopover(Gtk.Popover):
     def _filter(self):
         query = self.search.get_text().strip()
         self._words = emojis.fold(query).split()
-        if self.pages.get_visible_child_name() == "custom":
-            self.custom_flow.invalidate_filter()
-            mine = [c for c in self.custom_flow.get_children() if c.token]
-            shown = [c for c in mine if self._custom_visible(c)]
-            if not mine:
-                self.custom_empty.set_text("Aucun emoji personnalisé pour l'instant.\n"
-                                           "Cliquez sur + pour en créer un à partir d'une image.")
-            self.custom_empty.set_visible(not mine or (self._words and not shown))
-            if mine and not shown:
-                self.custom_empty.set_text("Aucun emoji trouvé")
-            self.hint.set_text("")
-            return
         found = False
         for title, flow, header, tab in self._sections:
             flow.invalidate_filter()
             recent = title == "Récents"
-            count = sum(1 for c in flow.get_children() if self._visible(c))
+            visible = self._custom_visible if flow is self.custom_flow else self._visible
+            count = sum(1 for c in flow.get_children() if visible(c))
             show = count > 0 and not (recent and self._words)
             flow.set_visible(show)
             header.set_visible(show)
@@ -2821,13 +2850,19 @@ class EmojiPopover(Gtk.Popover):
             found = found or show
         self.empty.set_visible(not found)
         self.tabs.set_visible(not self._words)
+        if self.custom_flow is not None:
+            self.custom_note.set_visible(not self._words and len(self.custom_flow.get_children()) == 1)
         self.hint.set_text("")
 
     def _first_visible(self):
+        """Premier résultat : un emoji, ou la case d'un emoji personnalisé."""
         for title, flow, _h, _t in self._sections:
             if flow.get_visible() and not (title == "Récents" and self._words):
                 for child in flow.get_children():
-                    if self._visible(child):
+                    if flow is self.custom_flow:
+                        if child.token and self._custom_visible(child):
+                            return child
+                    elif self._visible(child):
                         return child.emoji
         return None
 
@@ -2837,14 +2872,10 @@ class EmojiPopover(Gtk.Popover):
 
     # -- insertion -------------------------------------------------------------------
     def _insert_first(self):
-        if self.pages.get_visible_child_name() == "custom":
-            for child in self.custom_flow.get_children():
-                if child.token and self._custom_visible(child):
-                    self._pick_custom(child.token)
-                    return
-            return
         e = self._first_visible()
-        if e:
+        if isinstance(e, Gtk.FlowBoxChild):
+            self._pick_custom(e.token)
+        elif e:
             self._insert(e)
 
     def remember(self, char):
