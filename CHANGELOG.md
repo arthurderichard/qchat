@@ -6,6 +6,11 @@ version, QChat affiche les sections de toutes les versions installées depuis la
 Format : un titre `## X.Y.Z — AAAA-MM-JJ` par version, puis une liste à puces. `**gras**` et
 `` `code` `` sont mis en forme dans la fenêtre « Nouveautés ».
 
+## 1.14.1 — 2026-11-24
+
+- **Bouton de mise en forme** : le « Aa » de la barre de message, ainsi que le bouton code de la barre
+  de mise en forme, sont maintenant bien centrés.
+
 ## 1.14.0 — 2026-11-24
 
 - **Liens cliquables** : une adresse (`https://…` ou `www.…`) dans un message s'ouvre d'un clic

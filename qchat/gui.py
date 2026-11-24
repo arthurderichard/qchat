@@ -606,7 +606,7 @@ class MainWindow(Gtk.ApplicationWindow):
         composer.pack_start(self.emoji_btn, False, False, 0)
         # Bouton qui affiche ou masque la barre de mise en forme (au-dessus du texte).
         self.format_btn = Gtk.ToggleButton(tooltip_text="Mise en forme (gras, italique, souligné, barré, code, lien)")
-        self.format_btn.add(_label("Aa"))
+        self.format_btn.add(_label("Aa", xalign=0.5))
         self.format_btn.set_valign(Gtk.Align.END)
         for c in ("round", "format-toggle"):
             self.format_btn.get_style_context().add_class(c)
@@ -2214,7 +2214,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if icon:
                 btn.add(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
             else:
-                btn.add(_label("</>", "format-code-icon"))
+                btn.add(_label("</>", "format-code-icon", xalign=0.5))
             btn.connect("toggled", self._on_format_button, style)
             bar.pack_start(btn, False, False, 0)
             self._fmt_buttons[style] = btn
