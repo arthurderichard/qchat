@@ -115,6 +115,10 @@ popover.reaction-peek .reaction-peek-who { font-size: smaller; opacity: 0.8; }
 .qchat .react-btn { padding: 2px; min-height: 0; min-width: 0; color: $muted; }
 modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .qchat .meta link { color: $muted; }
+.qchat .msg-text link { color: $accent; }
+.qchat .bubble.out .msg-text link { color: $out_fg; }
+.format-popover button { padding: 4px 8px; }
+.format-popover .format-syntax { font-family: monospace; }
 .qchat .bubble.out .meta link { color: $out_meta; }
 .qchat .edit-bar { background-color: $input_bg; border-radius: 14px; padding: 2px 4px 2px 14px;
                    margin-bottom: 6px; border-left: 3px solid $accent; box-shadow: 0 1px 2px $shadow; }
@@ -152,6 +156,12 @@ modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .emoji-popover .emoji-tab { font-size: 17px; padding: 2px; min-height: 0; min-width: 0; }
 popover.reaction-peek .reaction-peek-add { padding: 2px 8px; min-height: 0; margin-top: 4px; }
 .emoji-popover .emoji-add { opacity: 0.7; }
+.qchat .format-bar button { min-height: 0; min-width: 0; padding: 3px 7px; border-radius: 8px; }
+.qchat .format-bar button:checked { background-color: alpha($accent, 0.18); color: $accent; }
+.qchat .format-toggle { font-weight: bold; }
+.qchat .composer .format-toggle:checked { color: $accent; background-color: alpha($accent, 0.12); }
+.qchat .format-code-icon { font-family: monospace; font-weight: bold; font-size: smaller; }
+.media-popover .media-tabs button { padding: 3px 18px; min-height: 0; font-weight: bold; }
 .emoji-popover .emoji-custom-tab { padding: 2px 8px; min-height: 0; border-radius: 999px;
                                   background-color: alpha($accent, 0.14); font-size: smaller; font-weight: bold; }
 .emoji-popover .emoji-custom-tab:hover { background-color: alpha($accent, 0.26); }

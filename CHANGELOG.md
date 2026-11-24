@@ -6,6 +6,24 @@ version, QChat affiche les sections de toutes les versions installées depuis la
 Format : un titre `## X.Y.Z — AAAA-MM-JJ` par version, puis une liste à puces. `**gras**` et
 `` `code` `` sont mis en forme dans la fenêtre « Nouveautés ».
 
+## 1.14.0 — 2026-11-24
+
+- **Liens cliquables** : une adresse (`https://…` ou `www.…`) dans un message s'ouvre d'un clic
+  dans le navigateur.
+- **Barre de mise en forme** au-dessus de la zone de saisie : sélectionnez du texte à la souris puis
+  cliquez sur **gras**, *italique*, souligné, ~~barré~~, code ou lien. Les boutons s'allument selon
+  le texte sélectionné ; sans sélection, ils s'appliquent à ce que vous tapez ensuite. Le bouton
+  **Aa** affiche ou masque la barre.
+- **Mise en forme visible pendant la frappe** : la zone de saisie affiche directement le résultat,
+  comme dans un traitement de texte. Les raccourcis (Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+Maj+X, Ctrl+E,
+  Ctrl+K) et les marques tapées (`*gras*`, `_italique_`…) marchent aussi.
+- **Liens avec un texte** : le bouton lien (ou Ctrl+K) transforme la sélection en lien, sous le nom de
+  votre choix : « le planning » plutôt qu'une longue adresse. Un clic sur le lien, dans la zone de
+  saisie, permet de le modifier ou de le retirer.
+- Les aperçus et les notifications affichent le texte sans mise en forme.
+- **Emojis et GIF réunis** : le bouton 😊 ouvre un seul menu à deux onglets, *Emojis* et *GIF*. Il
+  se rouvre sur le dernier onglet utilisé.
+
 ## 1.13.1 — 2026-11-24
 
 - **Emojis personnalisés animés** : créez un emoji à partir de n'importe quel GIF, même lourd. QChat le

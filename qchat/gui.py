@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, changelog, emojis, gifdecode, gifencode, gifs, netutil, session, updater  # noqa: E402
+from . import __version__, changelog, emojis, gifdecode, gifencode, gifs, netutil, richtext, session, updater  # noqa: E402
 from .core import (DEFAULT_PORT, MAX_AVATAR, MAX_CEMOJI, Core, cemoji_name, is_custom,  # noqa: E402
                    mention_pattern, sniff_mime, valid_emoji)
 from .reactfx import EmojiSprite, FxLayer  # noqa: E402
@@ -36,6 +36,16 @@ from .wizz import WizzPopup, play_buzz, shake_widget  # noqa: E402
 log = logging.getLogger("qchat")
 
 APP_ID = "fr.qchat.QChat"
+
+
+# (style, marque, nom, (touche, Maj), raccourci affiché, icône) des boutons de mise en forme
+FORMATS = (
+    (richtext.BOLD, "*", "Gras", (Gdk.KEY_b, False), "Ctrl+B", "format-text-bold-symbolic"),
+    (richtext.ITALIC, "_", "Italique", (Gdk.KEY_i, False), "Ctrl+I", "format-text-italic-symbolic"),
+    (richtext.UNDERLINE, "__", "Souligné", (Gdk.KEY_u, False), "Ctrl+U", "format-text-underline-symbolic"),
+    (richtext.STRIKE, "~", "Barré", (Gdk.KEY_x, True), "Ctrl+Maj+X", "format-text-strikethrough-symbolic"),
+    (richtext.CODE, "`", "Code", (Gdk.KEY_e, False), "Ctrl+E", None),
+)
 
 
 def _label(text="", css=None, xalign=0.0, wrap=False, selectable=False, markup=False):
@@ -581,23 +591,26 @@ class MainWindow(Gtk.ApplicationWindow):
         attach.get_style_context().add_class("round")
         attach.connect("clicked", lambda _b: self._pick_files())
         composer.pack_start(attach, False, False, 0)
-        self.gif_btn = Gtk.MenuButton(label="GIF", tooltip_text="Envoyer un GIF")
-        self.gif_btn.set_valign(Gtk.Align.END)
-        for c in ("round", "gif-btn"):
-            self.gif_btn.get_style_context().add_class(c)
+        # Emojis et GIF : un seul bouton, un seul menu à deux onglets.
         self.gif_popover = GifPopover(self)
-        self.gif_btn.set_popover(self.gif_popover)
-        composer.pack_start(self.gif_btn, False, False, 0)
-        self.emoji_btn = Gtk.MenuButton(tooltip_text="Insérer un emoji")
+        self.emoji_btn = Gtk.MenuButton(tooltip_text="Emojis et GIF")
         self.emoji_btn.add(Gtk.Image.new_from_icon_name("face-smile-symbolic", Gtk.IconSize.BUTTON))
         self.emoji_btn.set_valign(Gtk.Align.END)
         self.emoji_btn.get_style_context().add_class("round")
         self.emoji_popover = EmojiPopover(self)
+        self.media_popover = MediaPopover(self.emoji_popover, self.gif_popover)
         # Sélecteurs d'emoji (saisie et réactions) préparés en tâche de fond après le démarrage.
         GLib.timeout_add_seconds(2, lambda: (self.emoji_popover.prebuild(), self._react_picker_widget().prebuild())
                                  and False)
-        self.emoji_btn.set_popover(self.emoji_popover)
+        self.emoji_btn.set_popover(self.media_popover)
         composer.pack_start(self.emoji_btn, False, False, 0)
+        # Bouton qui affiche ou masque la barre de mise en forme (au-dessus du texte).
+        self.format_btn = Gtk.ToggleButton(tooltip_text="Mise en forme (gras, italique, souligné, barré, code, lien)")
+        self.format_btn.add(_label("Aa"))
+        self.format_btn.set_valign(Gtk.Align.END)
+        for c in ("round", "format-toggle"):
+            self.format_btn.get_style_context().add_class(c)
+        composer.pack_start(self.format_btn, False, False, 0)
         self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
         self.input.set_left_margin(4)
         self.input.set_right_margin(4)
@@ -627,10 +640,14 @@ class MainWindow(Gtk.ApplicationWindow):
                                                         priority=GLib.PRIORITY_HIGH))
         buf.connect("notify::cursor-position", lambda *_a: self.emoji_completion.update())
         buf.connect_after("insert-text", self._on_input_insert)
+        self._setup_format_tags(buf)
         self._auto_busy = False     # remplacement automatique en cours (ne pas réagir à nos propres modifs)
         self._last_auto = None      # dernier remplacement automatique, annulable par Retour arrière
         self._kept_smiley = None    # smiley gardé tel quel (Retour arrière) : pas converti à l'envoi
-        composer.pack_start(in_overlay, True, True, 0)
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        column.pack_start(self._format_bar(), False, False, 0)
+        column.pack_start(in_overlay, True, True, 0)
+        composer.pack_start(column, True, True, 0)
         send = Gtk.Button.new_from_icon_name("document-send-symbolic", Gtk.IconSize.BUTTON)
         send.set_tooltip_text("Envoyer (Entrée) — Maj+Entrée pour un retour à la ligne")
         send.get_style_context().add_class("send-btn")
@@ -675,7 +692,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _preview(self, m):
         """Aperçu d'un message pour la barre latérale."""
-        text = " ".join((f"📎 {m.text}" if m.kind == "file" else m.text).split())
+        text = " ".join((f"📎 {m.text}" if m.kind == "file" else richtext.plain(m.text)).split())
         if m.deleted is not None:
             text = "Message supprimé"
         if m.kind == "system":
@@ -1012,7 +1029,8 @@ class MainWindow(Gtk.ApplicationWindow):
             ctx.add_class("jumbo-bubble")
             bubble.pack_start(self._sticker_widget(m.sticker, *sticker[:2]), False, False, 0)
         else:
-            text = _label("", wrap=True, selectable=True)
+            text = _label("", "msg-text", wrap=True, selectable=True)
+            text.set_track_visited_links(False)
             self._set_message_text(text, bubble, m)
             text.set_max_width_chars(60)
             text.set_can_focus(False)
@@ -1080,26 +1098,16 @@ class MainWindow(Gtk.ApplicationWindow):
         me = self.core.identity.vk_hex
         if me in m.mentions:
             bctx.add_class("mentioned")
-        names = sorted(set(self._mention_names(m)), key=len, reverse=True)
-        if not names:
-            label.set_text(m.text)
-            return
         spans = []
-        for name in names:
+        for name in sorted(set(self._mention_names(m)), key=len, reverse=True):
             for match in mention_pattern(name).finditer(m.text):
                 if not any(a < match.end() and match.start() < b for a, b in spans):
                     spans.append((match.start(), match.end()))
-        if not spans:
+        # Liens cliquables, *gras*, _italique_, ~barré~, `code` et mentions.
+        if richtext.has_format(m.text, spans):
+            label.set_markup(richtext.markup(m.text, spans, mention_color=self.app.theme.palette["accent"]))
+        else:
             label.set_text(m.text)
-            return
-        color = self.app.theme.palette["accent"]
-        out, pos = [], 0
-        for a, b in sorted(spans):
-            out.append(GLib.markup_escape_text(m.text[pos:a]))
-            out.append(f"<span foreground='{color}' weight='bold'>{GLib.markup_escape_text(m.text[a:b])}</span>")
-            pos = b
-        out.append(GLib.markup_escape_text(m.text[pos:]))
-        label.set_markup("".join(out))
 
     def _rerender(self, msg_id):
         """Reconstruit la bulle d'un message affiché (suppression, citation modifiée…)."""
@@ -1119,7 +1127,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if m.kind == "file":
             att = self.core.store.get_attachment(m.id)
             return "🖼 Image" if att and att.is_image else f"📎 {m.text}"
-        return " ".join(m.text.split())
+        return " ".join(richtext.plain(m.text).split())
 
     def _quote_widget(self, ref_id, conv):
         """Rappel du message auquel on répond ; un clic fait défiler jusqu'à lui."""
@@ -2014,6 +2022,16 @@ class MainWindow(Gtk.ApplicationWindow):
         if (event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_v, Gdk.KEY_V)
                 and self.current and self._paste()):
             return True
+        if event.state & Gdk.ModifierType.CONTROL_MASK:
+            shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+            key = Gdk.keyval_to_lower(event.keyval)
+            for style, _mark, _title, (k, needs_shift), _shortcut, _icon in FORMATS:
+                if key == k and shift == needs_shift:
+                    self._apply_format(style)
+                    return True
+            if key == Gdk.KEY_k and not shift:
+                self._edit_link()
+                return True
         if event.keyval == Gdk.KEY_Escape and self._editing:
             self._cancel_edit()
             return True
@@ -2032,6 +2050,408 @@ class MainWindow(Gtk.ApplicationWindow):
             self._send()
             return True
         return False
+
+    # -- mise en forme du message ----------------------------------------------------------
+    # La zone de saisie affiche le texte déjà mis en forme, sans marques visibles, comme un traitement
+    # de texte. Les marques tapées à la main (*gras*, _italique_, [texte](adresse)…) sont converties
+    # aussitôt. À l'envoi, le texte est retranscrit avec les marques (richtext.serialize) : c'est ce
+    # qui voyage, lisible aussi par les anciennes versions.
+    STYLES = (richtext.BOLD, richtext.ITALIC, richtext.UNDERLINE, richtext.STRIKE, richtext.CODE)
+
+    def _setup_format_tags(self, buf):
+        buf.create_tag(richtext.BOLD, weight=Pango.Weight.BOLD)
+        buf.create_tag(richtext.ITALIC, style=Pango.Style.ITALIC)
+        buf.create_tag(richtext.UNDERLINE, underline=Pango.Underline.SINGLE)
+        buf.create_tag(richtext.STRIKE, strikethrough=True)
+        buf.create_tag(richtext.CODE, family="monospace", background_rgba=Gdk.RGBA(0.5, 0.5, 0.5, 0.18))
+        buf.create_tag("autolink", underline=Pango.Underline.SINGLE)
+        self._link_tags = {}            # nom de balise -> adresse
+        self._fmt_typing = None         # styles des prochains caractères tapés (None : ceux d'avant)
+        self._fmt_inserting = False
+        self._fmt_busy = False
+        self._fmt_pending = False
+        self._fmt_insert = (0, set())
+        buf.connect("insert-text", self._fmt_before_insert)
+        buf.connect_after("insert-text", self._fmt_after_insert)
+        buf.connect("notify::cursor-position", self._fmt_cursor_moved)
+        buf.connect("changed", self._fmt_changed)
+        self.input.set_has_tooltip(True)
+        self.input.connect("query-tooltip", self._input_tooltip)
+        self.input.connect("button-release-event", self._input_clicked)
+
+    def _link_tag(self, url):
+        buf = self.input.get_buffer()
+        for name, known in self._link_tags.items():
+            if known == url:
+                return buf.get_tag_table().lookup(name)
+        name = f"link-{len(self._link_tags)}"
+        self._link_tags[name] = url
+        return buf.create_tag(name, underline=Pango.Underline.SINGLE,
+                              foreground=self.app.theme.palette["accent"])
+
+    def _tags_at(self, it):
+        """(styles, adresse du lien) du caractère qui suit ``it``."""
+        styles, url = set(), None
+        for tag in it.get_tags():
+            name = tag.props.name
+            if name in self.STYLES:
+                styles.add(name)
+            elif name in self._link_tags:
+                url = self._link_tags[name]
+        return styles, url
+
+    def _link_range(self, it):
+        """(début, fin, adresse) du lien sous ``it``, ou None."""
+        for tag in it.get_tags():
+            if tag.props.name in self._link_tags:
+                start, end = it.copy(), it.copy()
+                if not start.starts_tag(tag):
+                    start.backward_to_tag_toggle(tag)
+                end.forward_to_tag_toggle(tag)
+                return start, end, self._link_tags[tag.props.name]
+        return None
+
+    def _typing_styles(self, it):
+        """Styles de ce qui est tapé en ``it`` : ceux choisis (Ctrl+B…), sinon ceux du caractère
+        précédent, comme dans un traitement de texte (un lien, lui, ne se prolonge pas)."""
+        if self._fmt_typing is not None:
+            return set(self._fmt_typing)
+        if it.starts_line():
+            return set()
+        before = it.copy()
+        before.backward_char()
+        return self._tags_at(before)[0]
+
+    def _fmt_before_insert(self, _buf, it, _text, _length):
+        self._fmt_inserting = True
+        self._fmt_insert = (it.get_offset(), self._typing_styles(it))
+
+    def _fmt_after_insert(self, buf, it, _text, _length):
+        self._fmt_inserting = False
+        offset, styles = self._fmt_insert
+        start = buf.get_iter_at_offset(offset)
+        for name in self.STYLES:        # GTK ne prolonge pas les balises : on applique celles voulues
+            if name in styles:
+                buf.apply_tag_by_name(name, start, it)
+            else:
+                buf.remove_tag_by_name(name, start, it)
+
+    def _fmt_cursor_moved(self, *_a):
+        if not self._fmt_inserting and not self._fmt_busy:
+            self._fmt_typing = None
+
+    def _fmt_changed(self, _buf):
+        if not self._fmt_busy and not self._fmt_pending:
+            self._fmt_pending = True
+            GLib.idle_add(self._fmt_convert, priority=GLib.PRIORITY_HIGH)
+
+    def _fmt_convert(self):
+        """Convertit les marques tapées en mise en forme et souligne les adresses tapées telles
+        quelles (elles seront cliquables à l'arrivée)."""
+        self._fmt_pending = False
+        buf = self.input.get_buffer()
+        text = buf.get_text(*buf.get_bounds(), False)
+        self._fmt_busy = True
+        try:
+            buf.remove_tag_by_name("autolink", *buf.get_bounds())
+            if not any(c in text for c in "*_~`[.:"):
+                return False
+            hidden, styles, links, labeled = richtext.analyse(text)
+            if any(hidden):
+                buf.begin_user_action()
+                for i in range(len(text)):
+                    if hidden[i]:
+                        continue
+                    a, b = buf.get_iter_at_offset(i), buf.get_iter_at_offset(i + 1)
+                    for name in styles[i] & set(self.STYLES):
+                        buf.apply_tag_by_name(name, a, b)
+                    if labeled[i]:
+                        buf.apply_tag(self._link_tag(links[i]), a, b)
+                for i in range(len(text) - 1, -1, -1):
+                    if hidden[i]:
+                        buf.delete(buf.get_iter_at_offset(i), buf.get_iter_at_offset(i + 1))
+                buf.end_user_action()
+                self._fmt_typing = set()        # après une conversion, la suite est tapée sans style
+                text = buf.get_text(*buf.get_bounds(), False)
+                hidden, styles, links, labeled = richtext.analyse(text)
+            for i, url in enumerate(links):
+                it = buf.get_iter_at_offset(i)
+                if url and not hidden[i] and self._tags_at(it)[1] is None:
+                    buf.apply_tag_by_name("autolink", it, buf.get_iter_at_offset(i + 1))
+        finally:
+            self._fmt_busy = False
+        return False
+
+    def _input_text(self):
+        """Texte à envoyer : le contenu de la zone de saisie, mise en forme retranscrite en marques."""
+        buf = self.input.get_buffer()
+        it = buf.get_start_iter()
+        chars = []
+        while not it.is_end():
+            styles, url = self._tags_at(it)
+            chars.append((it.get_char(), frozenset(styles), url))
+            it.forward_char()
+        return richtext.serialize(chars)
+
+    def _set_input_text(self, text):
+        """Remplit la zone de saisie avec un texte à marques, affiché mis en forme."""
+        buf = self.input.get_buffer()
+        buf.set_text(text)
+        self._fmt_convert()
+        self._fmt_typing = None
+
+    def _format_bar(self):
+        """Barre de mise en forme : sélectionnez à la souris puis cliquez. Les boutons montrent les
+        styles de la sélection (ou de ce qui sera tapé) ; ils ne prennent pas le focus, la sélection
+        reste en place."""
+        self._fmt_buttons = {}
+        self._fmt_syncing = False
+        bar = Gtk.Box(spacing=2, margin_top=4)
+        bar.get_style_context().add_class("format-bar")
+        for style, mark, title, _keys, shortcut, icon in FORMATS:
+            btn = Gtk.ToggleButton(relief=Gtk.ReliefStyle.NONE, focus_on_click=False,
+                                   tooltip_text=f"{title} ({shortcut}) — ou tapez {mark}texte{mark}")
+            if icon:
+                btn.add(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
+            else:
+                btn.add(_label("</>", "format-code-icon"))
+            btn.connect("toggled", self._on_format_button, style)
+            bar.pack_start(btn, False, False, 0)
+            self._fmt_buttons[style] = btn
+        bar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6),
+                       False, False, 4)
+        self._fmt_link_btn = Gtk.ToggleButton(relief=Gtk.ReliefStyle.NONE, focus_on_click=False,
+                                              tooltip_text="Insérer ou modifier un lien (Ctrl+K)")
+        self._fmt_link_btn.add(Gtk.Image.new_from_icon_name("insert-link-symbolic", Gtk.IconSize.BUTTON))
+        self._fmt_link_btn.connect("toggled", lambda b: self._fmt_syncing or (self._edit_link(),
+                                                                              self._sync_format_buttons()))
+        bar.pack_start(self._fmt_link_btn, False, False, 0)
+        revealer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=150)
+        revealer.add(bar)
+        shown = self.core.store.get_setting("format_bar", "1") == "1"
+        revealer.set_reveal_child(shown)
+        self.format_btn.set_active(shown)
+        self.format_btn.connect("toggled", self._toggle_format_bar)
+        self.format_bar = revealer
+        buf = self.input.get_buffer()
+        self._sel_memory = None         # (curseur, début, fin) de la dernière sélection
+        buf.connect("mark-set", self._on_input_mark)
+        buf.connect_after("changed", lambda _b: (setattr(self, "_sel_memory", None), self._sync_format_buttons()))
+        return revealer
+
+    def _on_input_mark(self, buf, _it, mark):
+        name = mark.get_name()
+        if name not in ("insert", "selection_bound"):
+            return
+        cursor = buf.get_iter_at_mark(buf.get_insert()).get_offset()
+        sel = buf.get_selection_bounds()
+        if sel:
+            self._sel_memory = (cursor, sel[0].get_offset(), sel[1].get_offset())
+        elif self._sel_memory and (name == "insert" or self._sel_memory[0] != cursor):
+            self._sel_memory = None     # le curseur a bougé : la sélection a vraiment été abandonnée
+        self._sync_format_buttons()
+
+    def _input_selection(self):
+        """Bornes de la sélection de la zone de saisie. Un gestionnaire de presse-papiers qui reprend la
+        sélection « primaire » fait perdre la sélection à GTK sans que l'utilisateur ait rien fait : la
+        dernière sélection est alors reprise tant que le curseur et le texte n'ont pas bougé."""
+        buf = self.input.get_buffer()
+        sel = buf.get_selection_bounds()
+        if sel:
+            return sel
+        memory = getattr(self, "_sel_memory", None)
+        if memory and buf.get_iter_at_mark(buf.get_insert()).get_offset() == memory[0]:
+            return buf.get_iter_at_offset(memory[1]), buf.get_iter_at_offset(memory[2])
+        return ()
+
+    def _toggle_format_bar(self, btn):
+        shown = btn.get_active()
+        self.format_bar.set_reveal_child(shown)
+        self.core.store.set_setting("format_bar", "1" if shown else "0")
+        self.input.grab_focus()
+
+    def _on_format_button(self, _btn, style):
+        if not self._fmt_syncing:
+            self._apply_format(style)
+            self._sync_format_buttons()
+
+    def _active_styles(self):
+        """Styles de la sélection (présents sur tout son texte), sinon ceux de la frappe ; plus le lien."""
+        buf = self.input.get_buffer()
+        sel = self._input_selection()
+        if not sel:
+            it = buf.get_iter_at_mark(buf.get_insert())
+            link = self._link_range(it) is not None
+            return self._typing_styles(it), link
+        start, end = sel
+        active, it, seen = set(self.STYLES), start.copy(), False
+        while it.compare(end) < 0 and active:
+            if not it.get_char().isspace():
+                seen = True
+                active &= self._tags_at(it)[0]
+            it.forward_char()
+        return (active if seen else set()), self._link_range(start) is not None
+
+    def _sync_format_buttons(self):
+        if not getattr(self, "_fmt_buttons", None):
+            return False
+        styles, link = self._active_styles()
+        self._fmt_syncing = True
+        try:
+            for style, btn in self._fmt_buttons.items():
+                btn.set_active(style in styles)
+            self._fmt_link_btn.set_active(link)
+        finally:
+            self._fmt_syncing = False
+        return False
+
+    def _apply_format(self, style):
+        """Ctrl+B, Ctrl+I… : met en forme la sélection (ou retire le style si elle l'a déjà) ; sans
+        sélection, active ou coupe le style pour ce qui sera tapé ensuite."""
+        buf = self.input.get_buffer()
+        self.input.grab_focus()
+        sel = self._input_selection()
+        if not sel:
+            styles = self._typing_styles(buf.get_iter_at_mark(buf.get_insert()))
+            styles ^= {style}
+            if style == richtext.CODE and richtext.CODE in styles:
+                styles = {richtext.CODE}
+            elif style != richtext.CODE:
+                styles.discard(richtext.CODE)
+            self._fmt_typing = styles
+            self._sync_format_buttons()
+            return
+        text = buf.get_text(*buf.get_bounds(), False)
+        a, b = sel[0].get_offset(), sel[1].get_offset()
+        # Mots entiers : une marque collée à une lettre ne serait pas reconnue à l'arrivée.
+        while 0 < a < len(text) and text[a - 1].isalnum() and text[a].isalnum():
+            a -= 1
+        while 0 < b < len(text) and text[b - 1].isalnum() and text[b].isalnum():
+            b += 1
+        start, end = buf.get_iter_at_offset(a), buf.get_iter_at_offset(b)
+        tag = buf.get_tag_table().lookup(style)
+        it, has_all = start.copy(), True
+        while it.compare(end) < 0:
+            if not it.get_char().isspace() and not it.has_tag(tag):
+                has_all = False
+                break
+            it.forward_char()
+        self._fmt_busy = True
+        try:
+            if has_all:
+                buf.remove_tag(tag, start, end)
+            else:
+                if style == richtext.CODE:
+                    for other in self.STYLES:
+                        buf.remove_tag_by_name(other, start, end)
+                else:
+                    buf.remove_tag_by_name(richtext.CODE, start, end)
+                buf.apply_tag(tag, start, end)
+            buf.select_range(buf.get_iter_at_offset(a), buf.get_iter_at_offset(b))
+        finally:
+            self._fmt_busy = False
+
+    # -- liens avec un texte affiché ---------------------------------------------------------
+    def _edit_link(self, it=None):
+        """Ctrl+K : insère un lien sur la sélection, ou modifie celui sous le curseur."""
+        buf = self.input.get_buffer()
+        sel = self._input_selection()
+        found = None
+        if it is None:
+            it = sel[0] if sel else buf.get_iter_at_mark(buf.get_insert())
+        found = self._link_range(it)
+        if found is None and not sel and not it.starts_line():
+            before = it.copy()
+            before.backward_char()
+            found = self._link_range(before)
+        if found:
+            start, end, url = found
+        elif sel:
+            (start, end), url = sel, None
+        else:
+            start = end = it
+            url = None
+        label = buf.get_text(start, end, False)
+        if url is None:
+            if richtext.is_url(label):
+                url = richtext.href_of(label)
+            else:
+                clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text() or ""
+                url = richtext.href_of(clip) if richtext.is_url(clip) else ""
+        a, b = start.get_offset(), end.get_offset()
+        answer = ask_link(self, label, url, editing=found is not None)
+        if answer is None:
+            return
+        self._fmt_busy = True
+        try:
+            buf.begin_user_action()
+            start, end = buf.get_iter_at_offset(a), buf.get_iter_at_offset(b)
+            if answer == "remove":
+                for name in self._link_tags:
+                    buf.remove_tag_by_name(name, start, end)
+                return
+            new_label, new_url = answer
+            if new_label != buf.get_text(start, end, False):
+                styles = self._tags_at(start)[0] if a < b else self._typing_styles(start)
+                self._fmt_typing = styles
+                buf.delete(start, end)
+                buf.insert(buf.get_iter_at_offset(a), new_label)
+                b = a + len(new_label)
+            start, end = buf.get_iter_at_offset(a), buf.get_iter_at_offset(b)
+            for name in self._link_tags:
+                buf.remove_tag_by_name(name, start, end)
+            buf.apply_tag(self._link_tag(new_url), start, end)
+            buf.place_cursor(end)
+        finally:
+            buf.end_user_action()
+            self._fmt_busy = False
+            self._fmt_typing = set()            # la suite n'est pas dans le lien
+            self.input.grab_focus()
+
+    def _link_at_pointer(self, x, y):
+        bx, by = self.input.window_to_buffer_coords(Gtk.TextWindowType.WIDGET, int(x), int(y))
+        over, it = self.input.get_iter_at_location(bx, by)
+        return (it, self._link_range(it)) if over else (None, None)
+
+    def _input_tooltip(self, _w, x, y, _kb, tooltip):
+        _it, found = self._link_at_pointer(x, y)
+        if not found:
+            return False
+        tooltip.set_text(f"{found[2]}\nClic pour modifier ou retirer le lien")
+        return True
+
+    def _input_clicked(self, _w, event):
+        """Clic sur un lien de la zone de saisie : petite bulle avec l'adresse, Modifier, Retirer."""
+        if event.button != 1 or self.input.get_buffer().get_has_selection():
+            return False
+        it, found = self._link_at_pointer(event.x, event.y)
+        if not found:
+            return False
+        start, end, url = found
+        pop = Gtk.Popover(relative_to=self.input, position=Gtk.PositionType.TOP)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(event.x), int(event.y), 1, 1
+        pop.set_pointing_to(rect)
+        box = Gtk.Box(spacing=4, margin=6)
+        link = Gtk.LinkButton(uri=url, label=url if len(url) <= 48 else url[:45] + "…")
+        box.pack_start(link, False, False, 0)
+        for icon, tip, fn in (("document-edit-symbolic", "Modifier le lien (Ctrl+K)", lambda: self._edit_link(it)),
+                              ("edit-delete-symbolic", "Retirer le lien", lambda: self._remove_link(start, end))):
+            btn = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
+            btn.set_relief(Gtk.ReliefStyle.NONE)
+            btn.set_tooltip_text(tip)
+            btn.connect("clicked", lambda _b, fn=fn: (pop.popdown(), fn()))
+            box.pack_start(btn, False, False, 0)
+        pop.add(box)
+        box.show_all()
+        pop.popup()
+        return False
+
+    def _remove_link(self, start, end):
+        buf = self.input.get_buffer()
+        a, b = start.get_offset(), end.get_offset()
+        for name in self._link_tags:
+            buf.remove_tag_by_name(name, buf.get_iter_at_offset(a), buf.get_iter_at_offset(b))
 
     # -- remplacements automatiques (smileys, :emoji:) ------------------------------------
     def _on_input_insert(self, buf, location, text, _length):
@@ -2116,7 +2536,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if not self.current:
             return
         buf = self.input.get_buffer()
-        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        text = self._input_text()
         if self.app.smileys_enabled():
             text = text.rstrip()
             found = emojis.smiley_before(text)
@@ -2226,11 +2646,11 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         self._cancel_reply()
         self._editing = msg_id
-        self.edit_orig.set_text(" ".join(m.text.split()))
+        self.edit_orig.set_text(" ".join(richtext.plain(m.text).split()))
         self.edit_bar.set_no_show_all(False)
         self.edit_bar.show_all()
         buf = self.input.get_buffer()
-        buf.set_text(m.text)
+        self._set_input_text(m.text)
         buf.place_cursor(buf.get_end_iter())
         self.input.grab_focus()
 
@@ -2316,7 +2736,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 title = f"{sender} — {g.name}" if g else sender
                 if self.core.identity.vk_hex in m.mentions:
                     title = f"{sender} vous a mentionné" + (f" — {g.name}" if g else "")
-            body = m.text
+            body = richtext.plain(m.text)
             if m.kind == "file":
                 att = self.core.store.get_attachment(m.id)
                 body = f"🖼 Image : {m.text}" if att and att.is_image else f"📎 Fichier : {m.text}"
@@ -2791,6 +3211,50 @@ def custom_emoji_image(path):
         if ok and len(data) <= MAX_CEMOJI:
             return bytes(data), small
     raise ValueError("Cette image est trop détaillée pour un emoji.")
+
+
+def ask_link(parent, label, url, editing=False):
+    """Dialogue « Lien » : (texte affiché, adresse), « remove » pour retirer le lien, None si annulé."""
+    dlg = Gtk.Dialog(title="Modifier le lien" if editing else "Insérer un lien", transient_for=parent,
+                     modal=True, use_header_bar=True)
+    dlg.add_button("Annuler", Gtk.ResponseType.CANCEL)
+    if editing:
+        dlg.add_button("Retirer le lien", 2)
+    ok = dlg.add_button("Enregistrer" if editing else "Insérer", Gtk.ResponseType.OK)
+    ok.get_style_context().add_class("suggested-action")
+    dlg.set_default_response(Gtk.ResponseType.OK)
+    dlg.get_style_context().add_class("qchat")
+    grid = Gtk.Grid(row_spacing=8, column_spacing=12, margin=18)
+    text_entry = Gtk.Entry(text=label.replace("\n", " "), activates_default=True, width_chars=36,
+                           placeholder_text="Texte affiché (facultatif)")
+    url_entry = Gtk.Entry(text=url, activates_default=True, width_chars=36,
+                          placeholder_text="https://…")
+    for row, (title, entry) in enumerate((("Texte à afficher", text_entry), ("Adresse", url_entry))):
+        grid.attach(_label(title, xalign=1.0), 0, row, 1, 1)
+        grid.attach(entry, 1, row, 1, 1)
+    error = _label("", "meta")
+    grid.attach(error, 1, 2, 1, 1)
+    dlg.get_content_area().pack_start(grid, True, True, 0)
+    grid.show_all()
+
+    def check(*_a):
+        raw = url_entry.get_text().strip()
+        valid = richtext.is_url(raw) or (raw and " " not in raw and "." in raw and richtext.is_url("https://" + raw))
+        ok.set_sensitive(bool(valid))
+        error.set_text("" if valid or not raw else "Adresse web attendue (https://… ou www.…)")
+    url_entry.connect("changed", check)
+    check()
+    (url_entry if label and not url else text_entry if not label else url_entry).grab_focus()
+    resp = dlg.run()
+    new_label = " ".join(text_entry.get_text().split()).replace("[", "(").replace("]", ")")
+    raw = url_entry.get_text().strip()
+    dlg.destroy()
+    if resp == 2:
+        return "remove"
+    if resp != Gtk.ResponseType.OK or not raw:
+        return None
+    new_url = richtext.href_of(raw)
+    return (new_label or raw), new_url
 
 
 def ask_emoji_name(parent, preview, name, action):
@@ -3447,6 +3911,46 @@ class EmojiCompletion(Gtk.Popover):
             self.win._auto_busy = False
         self.win.auto_replace(start, 1 + len(query), row.emoji.char, " ")
         self.win.input.grab_focus()
+
+
+class MediaPopover(Gtk.Popover):
+    """Menu « Emojis » / « GIF » de la zone de saisie : il accueille le contenu des deux sélecteurs,
+    qui gardent toute leur logique mais ne s'affichent plus eux-mêmes (leurs popup/popdown ouvrent et
+    ferment ce menu)."""
+
+    def __init__(self, emoji, gif):
+        super().__init__()
+        self.pages = {"emoji": emoji, "gif": gif}
+        self.get_style_context().add_class("media-popover")
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=100)
+        for name, title, picker in (("emoji", "😊  Emojis", emoji), ("gif", "GIF", gif)):
+            content = picker.get_child()
+            picker.remove(content)
+            page = Gtk.Box()
+            for cls in picker.get_style_context().list_classes():
+                page.get_style_context().add_class(cls)       # mêmes styles qu'avant (.emoji-popover…)
+            page.pack_start(content, True, True, 0)
+            self.stack.add_titled(page, name, title)
+            picker.get_child = lambda c=content: c
+            picker.popdown = self.popdown
+            picker.popup = lambda n=name: self.open(n)
+            picker.get_visible = lambda n=name: self.get_visible() and self.stack.get_visible_child_name() == n
+        switcher = Gtk.StackSwitcher(stack=self.stack, halign=Gtk.Align.CENTER, margin_top=8)
+        switcher.get_style_context().add_class("media-tabs")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.pack_start(switcher, False, False, 0)
+        box.pack_start(self.stack, True, True, 0)
+        self.add(box)
+        box.show_all()
+        self.stack.connect("notify::visible-child-name", lambda *_a: self.get_visible() and self._page_shown())
+        self.connect("show", lambda *_a: self._page_shown())
+
+    def open(self, name):
+        self.stack.set_visible_child_name(name)
+        self.popup()
+
+    def _page_shown(self):
+        self.pages[self.stack.get_visible_child_name()]._on_show()
 
 
 class GifPopover(Gtk.Popover):

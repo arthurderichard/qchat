@@ -22,7 +22,7 @@ Aucun serveur : chaque poste discute directement avec les autres.
   raccourcis `:feu` au clavier et smileys `:)` convertis en 🙂.
 - **Photos de profil et de groupe**, synchronisées chez tous vos contacts, et affichées à côté des
   messages de chacun dans les groupes.
-- **GIF** : recherche et envoi de GIF depuis la barre de message, sans rien configurer (KLIPY).
+- **GIF** : recherche et envoi de GIF depuis l'onglet *GIF* du bouton 😊, sans rien configurer (KLIPY).
 - **Wizz** : `/wizz` (ou `/poke`), ou le menu *Interactions* de la conversation, fait surgir chez le destinataire une fenêtre animée et sonore.
 - **Personnes identifiées par leurs IP**, avec **plusieurs IP par personne** (Wi-Fi, Ethernet…).
 - **File d'attente hors ligne** : un message à quelqu'un d'absent part automatiquement à son retour.
@@ -205,7 +205,8 @@ joignables). Pour un groupe : bouton ⋮ de la discussion › **Choisir une phot
 membre peut la changer, et les nouveaux membres la reçoivent avec leur invitation. Les postes en
 version antérieure à 1.3.0 continuent d'afficher les initiales.
 
-**GIF** : bouton **GIF** de la barre de message, prêt à l'emploi (aucune clé à saisir). Les tendances
+**GIF** : onglet **GIF** du bouton 😊 de la barre de message (depuis la 1.14.0 ; bouton **GIF** séparé
+avant), prêt à l'emploi (aucune clé à saisir). Les tendances
 s'affichent, tapez pour chercher, survolez une vignette pour l'animer, cliquez (ou Entrée pour le premier
 résultat) pour envoyer : le GIF est téléchargé puis envoyé comme une image ordinaire, chiffrée — vos
 contacts n'ont besoin ni d'Internet ni de rien d'autre. La recherche passe par le service KLIPY
@@ -241,7 +242,8 @@ une notification « … vous a mentionné ».
 **Réagir** : survolez un message et cliquez sur 😊 : ❤️ 👍 👎 😂 😮 😢 🔥, ou **+** pour
 choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche en grand.
 
-**Emoji** : le bouton 😊, à droite de *GIF*, ouvre la liste de tous les emoji, par catégorie, avec les
+**Emoji** : le bouton 😊 ouvre un menu à deux onglets, *Emojis* et *GIF* (rouvert sur le dernier
+utilisé). L'onglet *Emojis* liste tous les emoji, par catégorie, avec les
 emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
 le premier résultat.
 
@@ -254,6 +256,17 @@ message, il sert de réaction. L'image voyage avec la réaction ou le message (v
 empreinte SHA-256), les versions antérieures affichent `:nom:`. Clic droit : *Renommer…* ou *Retirer*.
 Un emoji reçu s'ajoute aux vôtres avec le bouton *Ajouter à mes emojis* de l'aperçu qui s'affiche au
 survol de sa réaction, par clic droit sur la réaction, ou **…** › *Ajouter à mes emojis* sur un sticker.
+
+**Mise en forme et liens** (depuis la 1.14.0) : la barre au-dessus de la zone de saisie (affichée ou
+masquée par le bouton **Aa**) met en **gras**, *italique*, souligné, ~~barré~~ ou code le texte
+sélectionné à la souris, et transforme la sélection en lien. Ses boutons s'allument selon le texte
+sélectionné. Sans sélection, ils s'appliquent à ce que vous tapez ensuite. La zone de saisie affiche
+le message déjà mis en forme. Raccourcis : **Ctrl+B**, **Ctrl+I**, **Ctrl+U**, **Ctrl+Maj+X**,
+**Ctrl+E**, **Ctrl+K** (lien). Un clic sur un lien de la zone de saisie permet de le modifier ou de le
+retirer. Les adresses (`https://…`, `www.…`) sont cliquables d'office. Taper les marques fonctionne
+aussi : `*gras*`, `_italique_`, `__souligné__`, `~barré~`, `` `code` ``, ```` ```bloc``` ````,
+`[texte](https://adresse)`. C'est sous cette forme que le message voyage : les versions antérieures
+affichent les marques telles quelles.
 
 **Emoji au clavier** (depuis la 1.10.0), sans ouvrir le sélecteur :
 
@@ -338,6 +351,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
 | `qchat/gifdecode.py` | décodeur GIF de secours quand gdk-pixbuf/glycin échoue      |
 | `qchat/gifencode.py` | réduction d'un GIF animé à la taille d'un emoji personnalisé |
+| `qchat/richtext.py` | mise en forme des messages (gras, italique…) et liens cliquables |
 | `qchat/emojis.py`  | liste des emoji (noms et mots-clés français fournis par GTK)  |
 | `qchat/session.py` | démarrage automatique (service systemd, entrée XDG)           |
 | `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |

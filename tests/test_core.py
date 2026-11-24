@@ -1301,6 +1301,98 @@ def _noise_frames(count, w, h, transparent=False):
     return out
 
 
+class RichTextTest(unittest.TestCase):
+    """Mise en forme des messages et liens cliquables."""
+
+    def test_styles_and_plain(self):
+        from qchat.richtext import markup, plain
+        t = "Salut *toi*, **vous**, _ici_ ~non~ ~~plus~~ `a*b*c`"
+        self.assertEqual(plain(t), "Salut toi, vous, ici non plus a*b*c")
+        m = markup(t)
+        for frag in ("<b>toi</b>", "<b>vous</b>", "<i>ici</i>", "<s>non</s>", "<s>plus</s>", ">a*b*c</span>"):
+            self.assertIn(frag, m)
+
+    def test_underline_with_other_styles(self):
+        from qchat.richtext import markup, plain, serialize
+        self.assertEqual(markup("a __mot__"), "a <u>mot</u>")
+        chars = [(c, frozenset(("u", "i", "b")), None) for c in "mot"]
+        text = serialize(chars)
+        self.assertEqual(plain(text), "mot")
+        self.assertIn("<u>", markup(text))
+        self.assertIn("<i>", markup(text))
+        self.assertIn("<b>", markup(text))
+
+    def test_no_false_positives(self):
+        from qchat.richtext import has_format, plain
+        for t in ("snake_case_name", "2*3*4", "* liste", "un *seul", "a ~ b ~ c", "prix : 5 * 3 = 15"):
+            self.assertFalse(has_format(t), t)
+            self.assertEqual(plain(t), t)
+
+    def test_links(self):
+        from qchat.richtext import markup, plain
+        m = markup("voir https://ex.com/a_b_c?x=1&y=2. Et www.qerys.com, (https://w.org/F_(b))")
+        self.assertIn('<a href="https://ex.com/a_b_c?x=1&amp;y=2"', m)       # point final exclu
+        self.assertIn('<a href="https://www.qerys.com"', m)
+        self.assertIn('<a href="https://w.org/F_(b)"', m)
+        self.assertNotIn("<i>", m)                                          # _ d'une adresse
+        self.assertEqual(plain("*https://ex.com*"), "https://ex.com")
+        self.assertIn('<a href="https://ex.com" title="https://ex.com"><b>https://ex.com</b></a>',
+                      markup("*https://ex.com*"))
+
+    def test_escaping_and_mentions(self):
+        from qchat.richtext import markup
+        m = markup("<b>x</b> & *y* @Bob", mentions=[(15, 19)], mention_color="#f00")
+        self.assertTrue(m.startswith("&lt;b&gt;x&lt;/b&gt; &amp; <b>y</b> "))
+        self.assertIn("foreground='#f00' weight='bold'>@Bob", m)
+
+    def test_code_block_and_spans(self):
+        from qchat.richtext import plain, spans
+        self.assertEqual(plain("```\nligne _1_\nligne 2\n```"), "ligne _1_\nligne 2")
+        self.assertEqual(spans("*a* x"), [(0, 1, "marker"), (1, 2, "b"), (2, 3, "marker")])
+        kinds = {k for _a, _b, k in spans("_i_ ~s~ `c` www.a.fr")}
+        self.assertEqual(kinds, {"marker", "i", "s", "code", "link"})
+
+
+class RichTextSerializeTest(unittest.TestCase):
+    """Zone de saisie mise en forme : retranscription en marques à l'envoi."""
+
+    @staticmethod
+    def _chars(*parts):
+        return [(c, frozenset(st), url) for text, st, url in parts for c in text]
+
+    def test_roundtrip(self):
+        from qchat.richtext import analyse, plain, serialize
+        cases = [
+            (("Salut ", (), None), ("tout", ("b",), None), (" le ", (), None), ("monde", ("b", "i"), None)),
+            (("voir ", (), None), ("notre site", ("b",), "https://q.fr/a_(b)"), (".", (), None)),
+            (("lancer ", (), None), ("make test", ("code",), None)),
+            (("a\n", (), None), ("l1\nl2", ("code",), None), ("\nfin", (), None)),
+            (("gras ", ("b",), None), ("fin", (), None)),
+        ]
+        for parts in cases:
+            chars = self._chars(*parts)
+            text = serialize(chars)
+            self.assertEqual(plain(text), "".join(c for c, _s, _u in chars), text)
+            hidden, styles, links, _labeled = analyse(text)
+            visible = [(styles[i] - {"mention"}, links[i]) for i in range(len(text)) if not hidden[i]]
+            for (c, st, url), (got, link) in zip(chars, visible):
+                if not c.isspace():
+                    self.assertEqual(set(st), got, text)
+                    self.assertEqual(url, link, text)
+
+    def test_links(self):
+        from qchat.richtext import analyse, is_url, serialize
+        self.assertEqual(serialize(self._chars(("https://x.org", (), "https://x.org"), (" ok", (), None))),
+                         "https://x.org ok")                    # adresse brute laissée telle quelle
+        self.assertEqual(serialize(self._chars(("doc", (), "https://a.org"))), "[doc](https://a.org)")
+        _h, _s, links, labeled = analyse("[doc](www.a.org) et https://b.org")
+        self.assertEqual(links[1], "https://www.a.org")
+        self.assertTrue(labeled[1])
+        self.assertFalse(labeled[-1])
+        self.assertTrue(is_url("www.a.org"))
+        self.assertFalse(is_url("bonjour"))
+
+
 class GifEncodeTest(unittest.TestCase):
     """Réduction d'un GIF animé à la taille d'un emoji personnalisé."""
 
