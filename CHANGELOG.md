@@ -6,6 +6,12 @@ version, QChat affiche les sections de toutes les versions installées depuis la
 Format : un titre `## X.Y.Z — AAAA-MM-JJ` par version, puis une liste à puces. `**gras**` et
 `` `code` `` sont mis en forme dans la fenêtre « Nouveautés ».
 
+## 1.11.1 — 2026-11-24
+
+- **GIF toujours affichés** : sur certains postes, un GIF reçu apparaissait comme un simple fichier
+  au lieu de s'animer dans la conversation. QChat sait maintenant les lire lui-même quand le
+  système n'y arrive pas (conversation, visionneuse et choix des GIF).
+
 ## 1.11.0 — 2026-11-23
 
 - **Menu « … » sur chaque message** : au survol, 😊 pour réagir, ↩ pour répondre et « … » tout au

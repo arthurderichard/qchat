@@ -1127,5 +1127,70 @@ class GifsTest(unittest.TestCase):
         self.assertIn("injoignable", str(cm.exception))
 
 
+def _tiny_gif(frames, palette=b"\xff\x00\x00\x00\x00\xff", w=2, h=2, transparent=None, disposal=0):
+    """GIF minimal : une couleur indexée par pixel, code « clear » avant chaque pixel (LZW trivial)."""
+    def lzw(indices):
+        bits = nbits = 0
+        out = bytearray()
+        for code in [c for i in indices for c in (4, i)] + [5]:     # clear=4, fin=5, codes sur 3 bits
+            bits |= code << nbits
+            nbits += 3
+            while nbits >= 8:
+                out.append(bits & 0xFF)
+                bits >>= 8
+                nbits -= 8
+        if nbits:
+            out.append(bits)
+        return bytes(out)
+    pal = palette.ljust(12, b"\0")
+    data = b"GIF89a" + bytes((w, 0, h, 0, 0x81, 0, 0)) + pal
+    data += b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00"
+    for indices in frames:
+        packed = (disposal << 2) | (1 if transparent is not None else 0)
+        data += b"\x21\xf9\x04" + bytes((packed, 5, 0, transparent or 0, 0))
+        data += b"\x2c" + bytes((0, 0, 0, 0, w, 0, h, 0, 0)) + b"\x02"
+        body = lzw(indices)
+        data += bytes((len(body),)) + body + b"\0"
+    return data + b"\x3b"
+
+
+class GifDecodeTest(unittest.TestCase):
+    """Décodeur de secours quand gdk-pixbuf/glycin ne sait pas lire un GIF."""
+
+    def test_frames_and_colours(self):
+        from qchat import gifdecode
+        frames = gifdecode.decode(_tiny_gif([[0, 1, 1, 0], [1, 1, 1, 1]]))
+        self.assertEqual(len(frames), 2)
+        first, delay = frames[0]
+        self.assertEqual(delay, 50)
+        self.assertEqual((first.get_width(), first.get_height()), (2, 2))
+        px = first.get_pixels()
+        self.assertEqual(px[0:4], b"\xff\x00\x00\xff")                  # rouge
+        self.assertEqual(px[4:8], b"\x00\x00\xff\xff")                  # bleu
+        self.assertEqual(frames[1][0].get_pixels()[0:4], b"\x00\x00\xff\xff")
+
+    def test_transparency_keeps_previous_frame(self):
+        from qchat import gifdecode
+        frames = gifdecode.decode(_tiny_gif([[0, 0, 0, 0], [2, 1, 2, 2]], transparent=2))
+        second = frames[1][0].get_pixels()
+        self.assertEqual(second[0:4], b"\xff\x00\x00\xff")             # transparent : rouge conservé
+        self.assertEqual(second[4:8], b"\x00\x00\xff\xff")
+
+    def test_animation_and_errors(self):
+        from qchat import gifdecode
+        anim, still = gifdecode.from_bytes(_tiny_gif([[0] * 4, [1] * 4]))
+        self.assertIsNotNone(anim)
+        self.assertEqual(still.get_width(), 2)
+        anim, still = gifdecode.from_bytes(_tiny_gif([[1] * 4]))
+        self.assertIsNone(anim)
+        self.assertIsNotNone(still)
+        self.assertEqual(gifdecode.from_bytes(b"GIF89a\x02\x00"), (None, None))
+        self.assertEqual(gifdecode.from_bytes(b"\x89PNG...."), (None, None))
+        with tempfile.NamedTemporaryFile(suffix=".gif") as f:
+            f.write(_tiny_gif([[0] * 4, [1] * 4]))
+            f.flush()
+            self.assertIsNotNone(gifdecode.load(f.name)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

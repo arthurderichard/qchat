@@ -16,6 +16,8 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
+from . import gifdecode  # noqa: E402
+
 try:
     gi.require_version("GtkSource", "4")
     from gi.repository import GtkSource  # noqa: E402
@@ -77,6 +79,8 @@ def viewable_kind(path, mime):
                 return "image"
         except (GLib.Error, TypeError):
             pass
+        if gifdecode.is_gif(head):
+            return "image"
         if mime.startswith("image/"):
             return None
     ctype = Gio.content_type_from_mime_type(mime) or mime
@@ -96,8 +100,30 @@ def load_animation(path):
             warnings.simplefilter("ignore", DeprecationWarning)
             anim = GdkPixbuf.PixbufAnimation.new_from_file(path)
             return None if anim.is_static_image() else anim
-    except (GLib.Error, OSError):
+    except OSError:
         return None
+    except GLib.Error as e:
+        anim, _still = gifdecode.load(path)
+        if anim is not None:
+            gifdecode.fallback_used(e.message)
+        return anim
+
+
+def load_pixbuf(path, max_w=None, max_h=None):
+    """Image fixe (première image d'un GIF), réduite à max_w × max_h si demandé ; GLib.Error si illisible."""
+    try:
+        if max_w:
+            return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, max_w, max_h, True)
+        return GdkPixbuf.Pixbuf.new_from_file(path)
+    except GLib.Error as e:
+        _anim, still = gifdecode.load(path)
+        if still is None:
+            raise
+        gifdecode.fallback_used(e.message)
+        if max_w:
+            w, h = fit(still.get_width(), still.get_height(), max_w, max_h)
+            still = still.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
+        return still
 
 
 class AnimatedImage(Gtk.Image):
@@ -192,7 +218,7 @@ class _ImageContent(_Content):
         self.anim = load_animation(path)
         self.pixbuf = None
         if self.anim is None:
-            pb = GdkPixbuf.Pixbuf.new_from_file(path)          # GLib.Error si illisible
+            pb = load_pixbuf(path)                              # GLib.Error si illisible
             self.pixbuf = pb.apply_embedded_orientation() or pb
             self.size = (self.pixbuf.get_width(), self.pixbuf.get_height())
             self.image = Gtk.Image()

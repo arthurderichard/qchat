@@ -17,14 +17,14 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, changelog, emojis, gifs, netutil, session, updater  # noqa: E402
+from . import __version__, changelog, emojis, gifdecode, gifs, netutil, session, updater  # noqa: E402
 from .core import DEFAULT_PORT, MAX_AVATAR, Core, mention_pattern, sniff_mime, valid_emoji  # noqa: E402
 from .crypto import fingerprint  # noqa: E402
 from .desktop import repair_user_icon_cache  # noqa: E402
 from .launcher import LauncherBadge  # noqa: E402
 from .notify import Notifier  # noqa: E402
 from .theme import MODES, ThemeManager  # noqa: E402
-from .viewer import AnimatedImage, Viewer, cover, fit, load_animation, viewable_kind  # noqa: E402
+from .viewer import AnimatedImage, Viewer, cover, fit, load_animation, load_pixbuf, viewable_kind  # noqa: E402
 from .viewer import human_size as _human_size  # noqa: E402
 from .wizz import WizzPopup, play_buzz, shake_widget  # noqa: E402
 
@@ -150,8 +150,12 @@ def _animation_from_bytes(data):
     try:
         loader.write(data)
         loader.close()
-    except GLib.Error:
-        return None, None
+    except GLib.Error as e:
+        anim, still = gifdecode.from_bytes(data)
+        if still is None:
+            return None, None
+        gifdecode.fallback_used(e.message)
+        return (anim, None) if anim else (None, still)
     anim = loader.get_animation()
     if anim is None:
         return None, loader.get_pixbuf()
@@ -1384,7 +1388,7 @@ class MainWindow(Gtk.ApplicationWindow):
             cache[path] = None
             try:
                 if os.path.getsize(path) <= 50 * 1024 * 1024:     # pas d'aperçu pour les images énormes
-                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 320, 240, True)
+                    pb = load_pixbuf(path, 320, 240)
                     cache[path] = pb.apply_embedded_orientation() or pb
             except (GLib.Error, OSError):
                 pass

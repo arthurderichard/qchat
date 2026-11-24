@@ -324,6 +324,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/changelog.py` | lecture de CHANGELOG.md (fenêtre « Nouveautés »)           |
 | `qchat/gui.py`     | interface GTK 3                                             |
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
+| `qchat/gifdecode.py` | décodeur GIF de secours quand gdk-pixbuf/glycin échoue      |
 | `qchat/emojis.py`  | liste des emoji (noms et mots-clés français fournis par GTK)  |
 | `qchat/session.py` | démarrage automatique (service systemd, entrée XDG)           |
 | `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |
