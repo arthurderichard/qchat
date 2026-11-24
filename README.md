@@ -245,9 +245,11 @@ choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche e
 emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
 le premier résultat.
 
-**Emojis personnalisés** (depuis la 1.12.0) : en fin de liste du sélecteur (onglet ⭐), **+** pour
-en créer un à partir d'une image (réduite à 128 px ; un GIF animé de moins de 48 Ko reste animé), puis
-donnez-lui un nom. Depuis la zone de saisie, un clic l'envoie seul, en grand ; depuis le 😊 d'un
+**Emojis personnalisés** (depuis la 1.12.0) : en fin de liste du sélecteur (onglet **Mes emojis**, à droite des catégories), **+** pour
+en créer un à partir d'une image (réduite à 128 px), puis donnez-lui un nom. Un GIF animé reste animé
+(depuis la 1.13.1) : au-delà de 48 Ko, QChat le réduit en taille puis en nombre d'images. Envoyé seul,
+il s'anime en continu ; en réaction ou dans le sélecteur, il reste fixe et ne s'anime qu'au survol du
+message, de la réaction ou de la case. Depuis la zone de saisie, un clic l'envoie seul, en grand ; depuis le 😊 d'un
 message, il sert de réaction. L'image voyage avec la réaction ou le message (vérifiée par son
 empreinte SHA-256), les versions antérieures affichent `:nom:`. Clic droit : *Renommer…* ou *Retirer*.
 Un emoji reçu s'ajoute aux vôtres avec le bouton *Ajouter à mes emojis* de l'aperçu qui s'affiche au
@@ -335,6 +337,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/gui.py`     | interface GTK 3                                             |
 | `qchat/gifs.py`    | recherche et téléchargement de GIF via l'API KLIPY           |
 | `qchat/gifdecode.py` | décodeur GIF de secours quand gdk-pixbuf/glycin échoue      |
+| `qchat/gifencode.py` | réduction d'un GIF animé à la taille d'un emoji personnalisé |
 | `qchat/emojis.py`  | liste des emoji (noms et mots-clés français fournis par GTK)  |
 | `qchat/session.py` | démarrage automatique (service systemd, entrée XDG)           |
 | `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |

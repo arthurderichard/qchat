@@ -12,7 +12,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("PangoCairo", "1.0")
-from gi.repository import Gdk, GdkPixbuf, Gtk, Pango, PangoCairo  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 POP_TIME = 0.9          # apparition : zoom depuis 0 avec dépassement puis rebond
 BUMP_TIME = 0.8         # survol : grossit, rebondit, revient
@@ -60,11 +60,19 @@ def draw_emoji(widget, cr, art, size):
 
 class EmojiSprite(Gtk.DrawingArea):
     """Emoji dessiné, capable de surgir (``pop``) et de rebondir (``bump``).
-    La zone est plus grande que l'emoji pour laisser la place au dépassement de l'animation."""
+    La zone est plus grande que l'emoji pour laisser la place au dépassement de l'animation.
 
-    def __init__(self, art, size, room=1.5):
+    ``frames`` (facultatif) renvoie les images d'un emoji animé [(Pixbuf, délai ms)] : il n'est appelé
+    qu'à la première lecture (``animate``), l'emoji restant fixe sinon."""
+
+    def __init__(self, art, size, room=1.5, frames=None):
         super().__init__()
         self.art, self.size = art, size
+        self._still = art
+        self._frames_fn = frames
+        self._frames = None
+        self._frame_i = 0
+        self._frame_timer = 0
         self.hidden = False             # caché en attendant l'emoji qui arrive en vol
         self._curve = None
         self._start = 0
@@ -73,7 +81,42 @@ class EmojiSprite(Gtk.DrawingArea):
         self.set_size_request(box, box)
         self.set_valign(Gtk.Align.CENTER)
         self.connect("draw", self._on_draw)
-        self.connect("unrealize", lambda *_a: self._stop())
+        self.connect("unrealize", lambda *_a: (self._stop(), self.animate(False)))
+
+    @property
+    def animated(self):
+        return self._frames_fn is not None
+
+    def animate(self, on=True):
+        """Lance (depuis la première image) ou arrête l'animation d'un emoji animé ; à l'arrêt,
+        l'emoji redevient fixe."""
+        if not on:
+            if self._frame_timer:
+                GLib.source_remove(self._frame_timer)
+                self._frame_timer = 0
+            if self.art is not self._still:
+                self.art = self._still
+                self.queue_draw()
+            return
+        if self._frame_timer or self._frames_fn is None:
+            return
+        if self._frames is None:
+            self._frames = self._frames_fn() or ()
+        if len(self._frames) > 1:
+            self._frame_i = 0
+            self._next_frame()
+
+    def _next_frame(self):
+        pb, delay = self._frames[self._frame_i]
+        self.art = pb
+        self.queue_draw()
+        self._frame_i = (self._frame_i + 1) % len(self._frames)
+        self._frame_timer = GLib.timeout_add(max(20, delay), self._advance)
+
+    def _advance(self):
+        self._frame_timer = 0
+        self._next_frame()
+        return False
 
     def _play(self, curve):
         self._curve = curve

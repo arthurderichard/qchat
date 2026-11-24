@@ -1209,6 +1209,29 @@ class ReactFxTest(unittest.TestCase):
         self.assertEqual(reactfx.bump_curve(reactfx.BUMP_TIME), (1.0, 0.0))
         self.assertLess(abs(reactfx.pop_curve(0.85)[0] - 1), 0.02)
 
+    def test_sprite_animates_only_on_demand(self):
+        from gi.repository import GdkPixbuf, GLib
+        from qchat import reactfx
+        still = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, 4, 4)
+        frames = [(GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, 4, 4), 30) for _ in range(3)]
+        calls = []
+        sprite = reactfx.EmojiSprite(still, 18, frames=lambda: calls.append(1) or frames)
+        self.assertTrue(sprite.animated)
+        self.assertEqual(calls, [])                      # rien de décodé tant qu'on ne survole pas
+        sprite.animate()
+        self.assertIs(sprite.art, frames[0][0])
+        ctx = GLib.MainContext.default()
+        deadline = GLib.get_monotonic_time() + 200_000
+        while sprite.art is frames[0][0] and GLib.get_monotonic_time() < deadline:
+            ctx.iteration(False)
+        self.assertIsNot(sprite.art, frames[0][0])       # les images défilent
+        sprite.animate(False)
+        self.assertIs(sprite.art, still)                 # redevient fixe
+        sprite.animate()
+        self.assertEqual(calls, [1])                     # images décodées une seule fois
+        sprite.animate(False)
+        self.assertFalse(reactfx.EmojiSprite(still, 18).animated)
+
     def test_emoji_names(self):
         self.assertEqual(core.cemoji_name("Chat qui rit.PNG"), "chat_qui_rit")
         self.assertEqual(core.cemoji_name("Éléphant  rose!"), "elephant_rose")
@@ -1253,6 +1276,85 @@ class ThumbCacheTest(unittest.TestCase):
             self.assertEqual(len(calls), 3)
             cache.warm(src, "w", make)                                         # déjà sur disque
             self.assertEqual(len(calls), 3)
+
+
+def _noise_frames(count, w, h, transparent=False):
+    """Images RGBA bruitées (difficiles à compresser) pour éprouver la réduction des GIF."""
+    import random
+    from gi.repository import GdkPixbuf, GLib
+    rnd = random.Random(7)
+    out = []
+    for i in range(count):
+        px = bytearray(rnd.getrandbits(8) for _ in range(w * h * 4))
+        for j in range(3, len(px), 4):
+            px[j] = 0 if transparent and (j // 4) % 7 == i % 7 else 255
+        out.append((GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(bytes(px)), GdkPixbuf.Colorspace.RGB,
+                                                    True, 8, w, h, w * 4), 80))
+    return out
+
+
+class GifEncodeTest(unittest.TestCase):
+    """Réduction d'un GIF animé à la taille d'un emoji personnalisé."""
+
+    def test_roundtrip_exact_with_few_colours(self):
+        from gi.repository import GdkPixbuf, GLib
+        from qchat import gifdecode, gifencode
+        cols = [b"\xff\x00\x00\xff", b"\x00\x80\xff\xff", b"\x10\x20\x30\xff", b"\x00\x00\x00\x00"]
+        frames = []
+        for i in range(4):
+            px = b"".join(cols[(x + i) % 4 if x % 3 else 0] for x in range(5 * 3))
+            frames.append((GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(px), GdkPixbuf.Colorspace.RGB,
+                                                           True, 8, 5, 3, 20), 120))
+        for transparent in (True, False):
+            src = frames
+            if not transparent:     # opaque : les pixels inchangés ne sont pas recodés
+                src = [(GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(bytes(
+                    b if (k % 4) != 3 else 255 for k, b in enumerate(pb.get_pixels()))),
+                    GdkPixbuf.Colorspace.RGB, True, 8, 5, 3, 20), d) for pb, d in frames]
+            out = gifdecode.decode(gifencode.encode(src))
+            self.assertEqual(len(out), 4)
+            for (a, _d), (b, delay) in zip(src, out):
+                self.assertEqual(delay, 120)
+                pa, pb = a.get_pixels(), b.get_pixels()
+                for k in range(0, len(pa), 4):
+                    if pa[k + 3] < 128:
+                        self.assertEqual(pb[k + 3], 0)
+                    else:
+                        self.assertEqual(pa[k:k + 4], pb[k:k + 4])
+
+    def test_shrink_keeps_animation_under_limit(self):
+        from qchat import gifdecode, gifencode
+        for transparent in (False, True):
+            frames = _noise_frames(12, 150, 100, transparent)
+            data = gifencode.shrink(frames, 48 * 1024)
+            self.assertIsNotNone(data)
+            self.assertLessEqual(len(data), 48 * 1024)
+            out = gifdecode.decode(data)
+            self.assertGreater(len(out), 1)                     # toujours animé
+            self.assertLessEqual(max(out[0][0].get_width(), out[0][0].get_height()), 128)
+            self.assertEqual(sum(d for _p, d in out), 12 * 80)  # même durée totale
+
+    def test_custom_emoji_image_from_heavy_gif(self):
+        import tempfile
+        from qchat import gifdecode, gifencode
+        from qchat.core import MAX_CEMOJI
+        from qchat.gui import custom_emoji_image
+        big = gifencode.encode(_noise_frames(6, 220, 220))
+        self.assertGreater(len(big), MAX_CEMOJI)
+        with tempfile.NamedTemporaryFile(suffix=".gif") as f:
+            f.write(big)
+            f.flush()
+            data, preview = custom_emoji_image(f.name)
+        self.assertLessEqual(len(data), MAX_CEMOJI)
+        self.assertTrue(gifdecode.is_gif(data))
+        self.assertGreater(len(gifdecode.decode(data)), 1)
+        self.assertEqual(preview.get_width(), 220)
+
+    def test_decode_pixel_budget(self):
+        from qchat import gifdecode, gifencode
+        data = gifencode.encode(_noise_frames(5, 10, 10))
+        self.assertEqual(len(gifdecode.decode(data)), 5)
+        self.assertEqual(len(gifdecode.decode(data, max_total=250)), 2)
 
 
 class GifDecodeTest(unittest.TestCase):

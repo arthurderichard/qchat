@@ -104,8 +104,9 @@ def _deinterlace(indices, w, h):
     return b"".join(out)
 
 
-def decode(data):
-    """Images complètes du GIF : liste de (Pixbuf RGBA à la taille du GIF, délai en ms)."""
+def decode(data, max_total=None):
+    """Images complètes du GIF : liste de (Pixbuf RGBA à la taille du GIF, délai en ms).
+    ``max_total`` : nombre total de pixels au-delà duquel les images suivantes sont ignorées."""
     if not is_gif(data) or len(data) < 13:
         raise GifError("pas un GIF")
     width, height, flags = struct.unpack_from("<HHB", data, 6)
@@ -122,7 +123,8 @@ def decode(data):
     canvas.fill(0)
     frames = []
     delay, transparent, disposal = 100, None, 0
-    while pos < len(data) and len(frames) < MAX_FRAMES:
+    limit = MAX_FRAMES if not max_total else max(1, min(MAX_FRAMES, max_total // (width * height)))
+    while pos < len(data) and len(frames) < limit:
         kind = data[pos]
         pos += 1
         if kind == 0x3B:                    # fin du fichier

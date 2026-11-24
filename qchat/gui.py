@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, changelog, emojis, gifdecode, gifs, netutil, session, updater  # noqa: E402
+from . import __version__, changelog, emojis, gifdecode, gifencode, gifs, netutil, session, updater  # noqa: E402
 from .core import (DEFAULT_PORT, MAX_AVATAR, MAX_CEMOJI, Core, cemoji_name, is_custom,  # noqa: E402
                    mention_pattern, sniff_mime, valid_emoji)
 from .reactfx import EmojiSprite, FxLayer  # noqa: E402
@@ -363,6 +363,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._reaction_boxes = {}    # msg_id -> boîte des réactions (conversation affichée)
         self._bubbles = {}           # msg_id -> bulle (point de départ de l'animation des réactions)
         self._emoji_arts = {}        # jeton d'emoji personnalisé -> image réduite
+        self._emoji_anims = {}       # jeton d'emoji personnalisé animé -> [(image, délai ms)]
+        self._hovered_msg = None     # message survolé : ses réactions animées s'animent
         self._emoji_pickers = []     # sélecteurs d'emoji à rafraîchir quand mes emojis changent
         self._peek = None            # bulle d'aperçu d'une réaction survolée
         self._peek_button = None     # pastille à laquelle elle est rattachée
@@ -1222,9 +1224,18 @@ class MainWindow(Gtk.ApplicationWindow):
         ev = Gtk.EventBox()
         ev.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
         ev.add(line)
-        ev.connect("enter-notify-event", lambda *_a: [b.set_opacity(1) for b in ensure_tools()])
-        ev.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
-                   or [b.set_opacity(0) for b in tools.hover or ()])
+        def enter(*_a):
+            for b in ensure_tools():
+                b.set_opacity(1)
+            self._hover_message(m.id, True)
+
+        def leave(_w, e):
+            if e.detail != Gdk.NotifyType.INFERIOR:
+                for b in tools.hover or ():
+                    b.set_opacity(0)
+                self._hover_message(m.id, False)
+        ev.connect("enter-notify-event", enter)
+        ev.connect("leave-notify-event", leave)
         ev.connect("button-press-event", lambda _w, e: e.button == 3
                    and self._options_popover(ensure_tools()[2], m.id))
         ev.tools = ensure_tools
@@ -1246,6 +1257,51 @@ class MainWindow(Gtk.ApplicationWindow):
                 return "❔"
             self._emoji_arts[emoji] = art
         return self._emoji_arts[emoji]
+
+    def _emoji_frames(self, emoji):
+        """Pour un emoji personnalisé animé (GIF) : fonction qui renvoie ses images [(Pixbuf, délai)],
+        décodées à la première lecture seulement ; None pour un emoji fixe."""
+        if self._emoji_anims.get(emoji) == []:
+            return None                 # déjà vu fixe
+        known = self.core.custom_emoji(emoji) if is_custom(emoji) else None
+        if not known:
+            return None
+        if emoji not in self._emoji_anims:
+            try:
+                with open(known[1], "rb") as f:
+                    if not gifdecode.is_gif(f.read(6)):
+                        self._emoji_anims[emoji] = []
+                        return None
+            except OSError:
+                return None
+        path = known[1]
+
+        def frames():
+            if emoji not in self._emoji_anims:
+                try:
+                    with open(path, "rb") as f:
+                        raw = gifdecode.decode(f.read())
+                except (OSError, ValueError, IndexError, GLib.Error):
+                    raw = []
+                out = []
+                for pb, delay in raw:
+                    w, h = fit(pb.get_width(), pb.get_height(), 96, 96)
+                    if (w, h) != (pb.get_width(), pb.get_height()):
+                        pb = pb.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
+                    out.append((pb, delay))
+                self._emoji_anims[emoji] = out if len(out) > 1 else []
+            return self._emoji_anims[emoji]
+        return frames
+
+    def _hover_message(self, msg_id, on):
+        """Survol d'un message : ses réactions animées s'animent, et redeviennent fixes ensuite."""
+        if on:
+            self._hovered_msg = msg_id
+        elif self._hovered_msg == msg_id:
+            self._hovered_msg = None
+        box = self._reaction_boxes.get(msg_id)
+        for sprite in (getattr(box, "sprites", None) or {}).values():
+            sprite.animate(on)
 
     def _emoji_text(self, emoji):
         if not is_custom(emoji):
@@ -1300,7 +1356,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 c = None if r == me else self.core.store.contact_by_vk(r)
                 names.append("Vous" if r == me else (c.name if c else "?"))
             art = self._emoji_art(emoji)
-            sprite = EmojiSprite(art, 18, room=1.4)
+            sprite = EmojiSprite(art, 18, room=1.4, frames=self._emoji_frames(emoji))
             inner = Gtk.Box(spacing=1)
             inner.pack_start(sprite, False, False, 0)
             if len(reactors) > 1:
@@ -1322,6 +1378,8 @@ class MainWindow(Gtk.ApplicationWindow):
             box.pack_start(b, False, False, 0)
             b.show_all()
             box.sprites[emoji] = sprite
+            if self._hovered_msg == msg_id:
+                sprite.animate()
         box.set_visible(bool(by_emoji))
         spacer = box.spacer
         if by_emoji:
@@ -1366,7 +1424,7 @@ class MainWindow(Gtk.ApplicationWindow):
         pop = Gtk.Popover(relative_to=button, modal=False, position=Gtk.PositionType.TOP)
         pop.get_style_context().add_class("reaction-peek")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=6)
-        big = EmojiSprite(art, 56, room=1.45)
+        big = EmojiSprite(art, 56, room=1.45, frames=self._emoji_frames(emoji))
         big.set_halign(Gtk.Align.CENTER)
         box.pack_start(big, False, False, 0)
         if is_custom(emoji):
@@ -1398,6 +1456,7 @@ class MainWindow(Gtk.ApplicationWindow):
                     or self._peek is not pop or self._unpeek_reaction())
         pop.popup()
         big.pop()
+        big.animate()
         self._peek = pop
 
     def _unpeek_reaction(self, now=False):
@@ -2692,9 +2751,14 @@ class UpdateDialog(Gtk.Dialog):
                             ("Redémarrer", self.app._restart, True)])
 
 
+GIF_EMOJI_PIXELS = 25_000_000      # au-delà, la fin d'un très long GIF n'est pas reprise dans l'emoji
+
+
 def custom_emoji_image(path):
-    """(octets, aperçu) pour un emoji personnalisé : un GIF animé léger est gardé tel quel, sinon
-    l'image est réduite à 128 px au plus et enregistrée en PNG. ValueError si c'est impossible."""
+    """(octets, aperçu) pour un emoji personnalisé : un GIF animé léger est gardé tel quel, un GIF
+    plus lourd est réduit en restant animé, toute autre image est réduite à 128 px au plus et
+    enregistrée en PNG. ValueError si c'est impossible. Peut prendre quelques secondes (gros GIF) :
+    à appeler hors du fil de l'interface."""
     try:
         if os.path.getsize(path) > 40 * 1024 * 1024:
             raise ValueError("Ce fichier est trop lourd.")
@@ -2702,10 +2766,20 @@ def custom_emoji_image(path):
             raw = f.read()
     except OSError as e:
         raise ValueError(e.strerror or str(e)) from e
-    if gifdecode.is_gif(raw) and len(raw) <= MAX_CEMOJI:
-        anim, still = gifdecode.load(path)
-        if anim is not None:
-            return raw, still
+    if gifdecode.is_gif(raw):
+        if len(raw) <= MAX_CEMOJI:
+            anim, still = gifdecode.load(path)
+            if anim is not None:
+                return raw, still
+        else:
+            # GIF animé trop lourd : réduit (taille, nombre d'images) en gardant l'animation.
+            try:
+                frames = gifdecode.decode(raw, max_total=GIF_EMOJI_PIXELS)
+            except (ValueError, IndexError, GLib.Error):
+                frames = []
+            data = gifencode.shrink(frames, MAX_CEMOJI) if len(frames) > 1 else None
+            if data:
+                return data, frames[0][0]
     try:
         pb = load_pixbuf(path)
     except GLib.Error as e:
@@ -2773,9 +2847,16 @@ class EmojiPopover(Gtk.Popover):
         self.search.connect("search-changed", lambda _e: self._filter())
         self.search.connect("activate", lambda _e: self._insert_first())
         box.pack_start(self.search, False, False, 0)
+        # Onglets des catégories, puis, séparé et nommé, celui des emojis personnalisés.
         self.tabs = Gtk.Box(spacing=0, homogeneous=True)
         self.tabs.get_style_context().add_class("emoji-tabs")
-        box.pack_start(self.tabs, False, False, 0)
+        self.tab_row = Gtk.Box(spacing=4)
+        self.tab_row.pack_start(self.tabs, True, True, 0)
+        self.custom_tab_slot = Gtk.Box()
+        self.tab_row.pack_end(self.custom_tab_slot, False, False, 0)
+        self.tab_row.pack_end(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=4, margin_bottom=4),
+                              False, False, 0)
+        box.pack_start(self.tab_row, False, False, 0)
         self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.scroll.add(self.list)
@@ -2825,8 +2906,14 @@ class EmojiPopover(Gtk.Popover):
             child = Gtk.FlowBoxChild(tooltip_text=f":{name}:")
             ev = Gtk.EventBox()
             if isinstance(art, GdkPixbuf.Pixbuf):
-                w, h = fit(art.get_width(), art.get_height(), 28, 28, upscale=True)
-                ev.add(Gtk.Image.new_from_pixbuf(art.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)))
+                # Fixe, animé au survol s'il s'agit d'un GIF.
+                cell = EmojiSprite(art, 28, room=1.0, frames=self.win._emoji_frames(token))
+                if cell.animated:
+                    ev.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+                    ev.connect("enter-notify-event", lambda _w, _e, c=cell: c.animate() or False)
+                    ev.connect("leave-notify-event", lambda _w, e, c=cell: e.detail == Gdk.NotifyType.INFERIOR
+                               or c.animate(False) or False)
+                ev.add(cell)
             else:
                 ev.add(Gtk.Label(label=art))
             child.add(ev)
@@ -2837,6 +2924,13 @@ class EmojiPopover(Gtk.Popover):
             child.get_style_context().add_class("custom-emoji-cell")
             self.custom_flow.add(child)
         self.custom_flow.show_all()
+        mine = self.core.custom_emojis()
+        art = self.win._emoji_art(mine[0][0]) if mine else None
+        if isinstance(art, GdkPixbuf.Pixbuf):
+            w, h = fit(art.get_width(), art.get_height(), 18, 18, upscale=True)
+            self.custom_tab_icon.set_from_pixbuf(art.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR))
+        else:
+            self.custom_tab_icon.set_from_icon_name("insert-image-symbolic", Gtk.IconSize.MENU)
         self.custom_note.set_visible(len(self.custom_flow.get_children()) == 1)
         self._filter()
 
@@ -2888,8 +2982,19 @@ class EmojiPopover(Gtk.Popover):
         chooser.destroy()
         if not path:
             return
+        # Un gros GIF demande quelques secondes de réduction : faite à côté, l'interface reste vivante.
+        job = _decoder().submit(custom_emoji_image, path)
+        window = self.win.get_window()
+        if not job.done() and window is not None:
+            window.set_cursor(Gdk.Cursor.new_from_name(self.win.get_display(), "wait"))
+        while not job.done():
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+            time.sleep(0.01)
+        if window is not None:
+            window.set_cursor(None)
         try:
-            data, preview = custom_emoji_image(path)
+            data, preview = job.result()
         except ValueError as e:
             self.win._error("Impossible d'utiliser cette image", str(e))
             return
@@ -2924,10 +3029,25 @@ class EmojiPopover(Gtk.Popover):
             flow.set_filter_func(self._visible)
         self.list.pack_start(header, False, False, 0)
         self.list.pack_start(flow, False, False, 0)
-        tab = Gtk.Button(label=icon, relief=Gtk.ReliefStyle.NONE, tooltip_text=title)
-        tab.get_style_context().add_class("emoji-tab")
+        if custom:
+            # Onglet explicite : vignette d'un de mes emojis (ou icône d'image) + « Mes emojis ».
+            tab = Gtk.Button(relief=Gtk.ReliefStyle.NONE,
+                             tooltip_text="Emojis personnalisés : créés à partir de vos images ou reçus")
+            inner = Gtk.Box(spacing=4)
+            self.custom_tab_icon = Gtk.Image.new_from_icon_name("insert-image-symbolic", Gtk.IconSize.MENU)
+            inner.pack_start(self.custom_tab_icon, False, False, 0)
+            inner.pack_start(Gtk.Label(label="Mes emojis"), False, False, 0)
+            tab.add(inner)
+            tab.get_style_context().add_class("emoji-custom-tab")
+            tab.connect("enter-notify-event", lambda *_a: self.hint.set_text(
+                "Emojis personnalisés : créés à partir de vos images, ou reçus de vos collègues") and False)
+            self.custom_tab_slot.pack_start(tab, False, False, 0)
+            self.custom_tab_slot.show_all()
+        else:
+            tab = Gtk.Button(label=icon, relief=Gtk.ReliefStyle.NONE, tooltip_text=title)
+            tab.get_style_context().add_class("emoji-tab")
+            self.tabs.pack_start(tab, False, True, 0)
         tab.connect("clicked", lambda _b: self._jump(header))
-        self.tabs.pack_start(tab, False, True, 0)
         self._sections.append((title, flow, header, tab))
         return flow
 
@@ -2981,7 +3101,7 @@ class EmojiPopover(Gtk.Popover):
             if i % 120 == 119:
                 yield
         # Mes emojis personnalisés en fin de liste, avec leur onglet pour y sauter directement.
-        self.custom_flow = self._section("Emojis personnalisés", "⭐", custom=True)
+        self.custom_flow = self._section("Mes emojis personnalisés", None, custom=True)
         self.custom_header = self._sections[-1][2]
         self.custom_note = _label("Cliquez sur + pour créer un emoji à partir d'une image.", "emoji-hint")
         self.custom_note.set_margin_start(4)
@@ -3044,7 +3164,7 @@ class EmojiPopover(Gtk.Popover):
             tab.set_sensitive(show)
             found = found or show
         self.empty.set_visible(not found)
-        self.tabs.set_visible(not self._words)
+        self.tab_row.set_visible(not self._words)
         if self.custom_flow is not None:
             self.custom_note.set_visible(not self._words and len(self.custom_flow.get_children()) == 1)
         self.hint.set_text("")

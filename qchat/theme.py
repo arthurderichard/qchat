@@ -152,6 +152,9 @@ modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .emoji-popover .emoji-tab { font-size: 17px; padding: 2px; min-height: 0; min-width: 0; }
 popover.reaction-peek .reaction-peek-add { padding: 2px 8px; min-height: 0; margin-top: 4px; }
 .emoji-popover .emoji-add { opacity: 0.7; }
+.emoji-popover .emoji-custom-tab { padding: 2px 8px; min-height: 0; border-radius: 999px;
+                                  background-color: alpha($accent, 0.14); font-size: smaller; font-weight: bold; }
+.emoji-popover .emoji-custom-tab:hover { background-color: alpha($accent, 0.26); }
 .emoji-popover .emoji-hint { font-size: smaller; opacity: 0.75; min-height: 18px; }
 .qchat .history-version { background-color: $in_bg; color: $in_fg; border-radius: 12px;
                           padding: 8px 12px; margin-bottom: 8px; }
