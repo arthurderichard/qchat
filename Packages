@@ -252,6 +252,29 @@ Description: messagerie chiffrée de bout en bout pour réseau local
  notifications de bureau.
 
 Package: qchat
+Version: 1.13.1
+Architecture: all
+Maintainer: Arthur Derichard <aderichard@qerys.com>
+Installed-Size: 656
+Depends: python3 (>= 3.8), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, python3-nacl
+Recommends: librsvg2-common, poppler-utils, gir1.2-gtksource-4, fonts-comic-neue
+Suggests: libnotify-bin
+Filename: pool/qchat_1.13.1_all.deb
+Size: 110648
+MD5sum: 9fdec0aacdbf5fa7788c2ce6fad3c155
+SHA1: 09f17ded5a61166806c551b921858d59d58d0c38
+SHA256: de4cf13240552d7fe2dee7cec1f59523d32ad7abbe5bcf1932d80cc4b4d3597f
+Section: net
+Priority: optional
+Homepage: https://github.com/arthurderichard/qchat
+Description: messagerie chiffrée de bout en bout pour réseau local
+ QChat est une messagerie instantanée pair-à-pair, sans serveur, pour discuter
+ avec ses collègues sur le réseau interne. Les échanges sont chiffrés de bout
+ en bout, les personnes sont identifiées par leurs adresses IP (plusieurs par
+ personne), et l'application gère les groupes, le partage de fichiers et les
+ notifications de bureau.
+
+Package: qchat
 Version: 1.2.0
 Architecture: all
 Maintainer: Arthur Derichard <aderichard@qerys.com>
