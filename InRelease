@@ -2,31 +2,31 @@
 Hash: SHA512
 
 Codename: stable
-Date: Tue, 24 Nov 2026 09:07:47 +0000
+Date: Tue, 24 Nov 2026 09:57:49 +0000
 Description: Dépôt apt de QChat
 Label: QChat
 Origin: QChat
 Suite: stable
 MD5Sum:
- f30515e2e00b31b1e72f28032aad3aad            16885 Packages
- d988448ac857df46d309f7adeb9d9359             2486 Packages.gz
- cb7236734ee3491c945ebd56b8ed037b             1296 Release
+ ab004cc4302da2d229934f83899fc2f2            17906 Packages
+ 0917ea7406b773cb59cc21490eb3ea80             2593 Packages.gz
+ af5b706840f104e03bea60a3d9cf2a26             1296 Release
 SHA1:
- 9f842422ec5f406414f3819b0efe9698713c5c0a            16885 Packages
- 462438500e5ac66f40a391ec115ab227bf5be615             2486 Packages.gz
- dcb7ff01d35e8b6da2252dac2e072b395f568bcc             1296 Release
+ 803e32d761e55ab0a7457dd5f902b6d8574aa60e            17906 Packages
+ 5d1b662cf4bb60a071fb9ec536c235efc1cbfef5             2593 Packages.gz
+ f7aaa677dfde3cb3eab7cc1035cfa64a4f8c256e             1296 Release
 SHA256:
- 73f1c3dbba29ec679183dce25f01552f3eebd603730f4a8cb9f6db932607f9a7            16885 Packages
- d201b39afbd30f793b45f70193e8ffd2996e07753168609c4e780a432943b6fa             2486 Packages.gz
- 78afec86735cf37e55882864ee169e4aefa15284f0328f5103693cbbc67fc698             1296 Release
+ 9517a1c1e4fce0b50ff9f358bd207203bfb4f7508d5a473493889921df140400            17906 Packages
+ be3e24ef73b30c4b32a7cd23957b6408a3527eef1e87ef7a37ef05f0e91da099             2593 Packages.gz
+ 6f6d3305b9d18fe958134f5bc66605ec50ad2764acc3842962ab5466b5512ef5             1296 Release
 SHA512:
- cebd6bd0df4cb16a5b9f1d8a447696ddcadf85e2e80c9629f037299a38b6ab909573ffe163e3e788e4c35a20b17103caff67739f248423f59edb6f7cb36fe74f            16885 Packages
- cd7970bd3389884536441b5395ca2db1d94f70aa9645b05aa497d69a741c1b77f82dfcc3ddd7e0ba3cd56d62f46ca9f228b54603b9476f095dced4cd6fa31c6e             2486 Packages.gz
- ff809b53d62e12b20343b990b6683a4aa24386740376d00cd8f9e880a7d6ee8d8d041706dd31fd574ffd62cd4564dc673a77f826dd8d53bbeabfbcd685ac6a3f             1296 Release
+ da86476efef18aabef09a8fb7ea03ae76fb1271321fb8197bce33b309af86363d4fcdb525e8c3f4b358d2e35c8b1c91fee77220518e5390a67982571e94c76c9            17906 Packages
+ 5f2b8356533430515e3b8d073a8f0cc5ab0cf4cdb63ac30655691c870fef3c9dd26170277223197f10a701426371f47bf32992466c3da1b5257a08fb21b7601c             2593 Packages.gz
+ 6ff8437b728fa3d9a2674da8fb6ffd373d83aa7e621ba8f990fdf39783c3e592c6d2d6b35bccef36032c6b935cb5a8192b1425349b8c2e7f7433dc0fc94c83b7             1296 Release
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQRY+3xaOlaocCdO/2sm3ttnmuPfVwUCawVT4wAKCRAm3ttnmuPf
-V/nkAP4/c2N1xlrBP9fr9iuXsBVdSeANyJs7ApsY4wp/iGIQpwD/a14bN9MkMLcx
-8RiyRyfBOMH3xB34M1FnnjH43FT4MQY=
-=PAwn
+iHUEARYKAB0WIQRY+3xaOlaocCdO/2sm3ttnmuPfVwUCawVfnQAKCRAm3ttnmuPf
+V+V1AP9RF5ycWvqLxyvWrgVHf/qoIz2/neq9Vw/GU1nr7FfCqgEAkAy6ou5W+XUD
+p7j4wLxWS+eAOIpUg2xJuMYCurT9ewU=
+=Ku0z
 -----END PGP SIGNATURE-----
