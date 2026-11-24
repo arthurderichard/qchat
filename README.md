@@ -339,6 +339,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/session.py` | démarrage automatique (service systemd, entrée XDG)           |
 | `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |
 | `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
+| `qchat/thumbcache.py` | cache disque des aperçus d'images et des photos rondes   |
 | `qchat/reactfx.py` | animations des réactions (apparition, envol, rebond au survol) |
 | `qchat/wizz.py`    | fenêtre animée des wizz / poke et son bzzz                  |
 

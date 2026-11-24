@@ -8,6 +8,8 @@ import shutil
 import tempfile
 import threading
 import time
+
+import cairo
 from concurrent.futures import ThreadPoolExecutor
 
 import gi
@@ -26,6 +28,7 @@ from .desktop import repair_user_icon_cache  # noqa: E402
 from .launcher import LauncherBadge  # noqa: E402
 from .notify import Notifier  # noqa: E402
 from .theme import MODES, ThemeManager  # noqa: E402
+from .thumbcache import ThumbCache, surface_from_pixbuf  # noqa: E402
 from .viewer import AnimatedImage, Viewer, cover, fit, load_animation, load_pixbuf, viewable_kind  # noqa: E402
 from .viewer import human_size as _human_size  # noqa: E402
 from .wizz import WizzPopup, play_buzz, shake_widget  # noqa: E402
@@ -76,9 +79,109 @@ def _initials(name):
     return letters.upper()
 
 
+_DECODER = None
+
+
+def _decoder():
+    """Fils de décodage des images animées (l'interface ne les attend pas)."""
+    global _DECODER
+    if _DECODER is None:
+        _DECODER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="qchat-decode")
+    return _DECODER
+
+
+def _maybe_animated(path):
+    """GIF ou WebP (seuls formats animés courants), d'après les premiers octets."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    return head[:6] in (b"GIF87a", b"GIF89a") or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+
+
+THUMBS = None           # ThumbCache de l'application (dossier de QChat), voir QChatApp.do_startup
+
+
+def _thumbs():
+    global THUMBS
+    if THUMBS is None:
+        THUMBS = ThumbCache(os.path.join(GLib.get_user_cache_dir(), "qchat", "thumbs"), _decoder().submit)
+    return THUMBS
+
+
+def _make_round(path, px):
+    """Surface cairo : la photo recadrée en disque de ``px`` pixels (utilisable hors de l'interface)."""
+    try:
+        pb = load_pixbuf(path)
+    except GLib.Error:
+        return None
+    side = min(pb.get_width(), pb.get_height())
+    pb = pb.new_subpixbuf((pb.get_width() - side) // 2, (pb.get_height() - side) // 2, side, side)
+    pb = pb.scale_simple(px, px, GdkPixbuf.InterpType.HYPER)
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, px, px)
+    cr = cairo.Context(surf)
+    cr.arc(px / 2, px / 2, px / 2, 0, 2 * 3.141592653589793)
+    cr.clip()
+    Gdk.cairo_set_source_pixbuf(cr, pb, 0, 0)
+    cr.paint()
+    return surf
+
+
+def _make_preview(path):
+    """Surface cairo : l'aperçu 320 × 240 au plus d'une image (utilisable hors de l'interface)."""
+    try:
+        if os.path.getsize(path) > 50 * 1024 * 1024:     # pas d'aperçu pour les images énormes
+            return None
+        pb = load_pixbuf(path, 320, 240)
+    except (GLib.Error, OSError):
+        return None
+    return surface_from_pixbuf(pb.apply_embedded_orientation() or pb)
+
+
+PREVIEW = "preview-320x240"
+AVATAR_SIZES = (42, 36)     # barre latérale, messages de groupe et en-tête
+
+
+def _round_photo(path, size, scale):
+    """Photo recadrée en disque de ``size`` px (surface cairo à l'échelle de l'écran), ou None.
+    Calculée une fois par photo et par taille, puis relue depuis le cache disque : la reconstruire
+    à chaque ligne coûtait ~3 ms."""
+    return _thumbs().get(path, f"round-{size}-{scale}", lambda: _make_round(path, size * scale), scale)
+
+
+def _warm_thumbnails(previews=(), photos=(), scale=1):
+    """Prépare en arrière-plan les miniatures absentes du cache disque (aperçus, photos rondes)."""
+    cache = _thumbs()
+
+    def work():
+        for p in photos:
+            for size in AVATAR_SIZES:
+                cache.warm(p, f"round-{size}-{scale}", lambda p=p, s=size: _make_round(p, s * scale))
+        for p in previews:
+            if os.path.isfile(p):
+                cache.warm(p, PREVIEW, lambda p=p: _make_preview(p))
+    _decoder().submit(work)
+
+
+def _screen_scale():
+    display = Gdk.Display.get_default()
+    try:
+        return max(display.get_monitor(i).get_scale_factor() for i in range(display.get_n_monitors())) or 1
+    except (AttributeError, ValueError):
+        return 1
+
+
 def _avatar(name, small=False, online=False, peer=False, image=None, large=False):
     """Pastille ronde : photo si ``image`` (chemin) est fourni, sinon initiales ; point vert de présence."""
-    lbl = _label("" if image else _initials(name), "avatar", xalign=0.5)
+    size = 84 if large else 36 if small else 42
+    photo = _round_photo(image, size, _screen_scale()) if image else None
+    if photo is not None:
+        lbl = Gtk.Image.new_from_surface(photo)
+        lbl.set_size_request(size, size)
+        lbl.get_style_context().add_class("avatar-photo")
+    else:
+        lbl = _label(_initials(name), "avatar", xalign=0.5)
     ctx = lbl.get_style_context()
     if small:
         ctx.add_class("small")
@@ -86,12 +189,6 @@ def _avatar(name, small=False, online=False, peer=False, image=None, large=False
         ctx.add_class("large")
     if peer:
         ctx.add_class("peer")
-    if image:
-        ctx.add_class("photo")
-        css = Gtk.CssProvider()
-        uri = Gio.File.new_for_path(image).get_uri().replace('"', "%22")
-        css.load_from_data(f'label {{ background-image: url("{uri}"); }}'.encode())
-        ctx.add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
     lbl.set_valign(Gtk.Align.CENTER)
     overlay = Gtk.Overlay(valign=Gtk.Align.CENTER)
     overlay.add(lbl)
@@ -139,7 +236,8 @@ REACT_OVERLAP = 13      # hauteur des pastilles qui chevauche le bas de la bulle
 PEEK_DELAY = 150        # ms sur une pastille avant d'afficher l'emoji en grand
 PEEK_HIDE_DELAY = 120   # ms avant de le masquer (un retour rapide sur la pastille le garde)
 STICKER = 96            # taille d'affichage d'un emoji personnalisé envoyé seul                   # messages construits à l'ouverture d'une conversation, puis par paquet
-OLDER_MARGIN = 400          # px du haut à partir desquels on charge les messages plus anciens
+OLDER_MARGIN = 1500         # px du haut à partir desquels on charge les messages plus anciens
+OLDER_STEP = 10             # messages construits à la fois en remontant (petits paquets : pas d'à-coup)
 RUN_GAP = 10 * 60           # au-delà, un nouveau message du même auteur reprend photo et nom
 PORT_WAIT = 15              # sous le service : délai d'attente d'un port encore occupé
 
@@ -342,6 +440,8 @@ class MainWindow(Gtk.ApplicationWindow):
         # Barre latérale
         self.sidebar = Gtk.ListBox()
         self.sidebar.set_header_func(self._sidebar_header)
+        self.sidebar.set_sort_func(lambda a, b: a.order - b.order)
+        self._side_rows = {}         # clé -> ligne de la barre latérale (réutilisée si inchangée)
         self.sidebar.connect("row-activated", self._on_row_activated)
         side_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         side_scroll.get_style_context().add_class("sidebar")
@@ -491,6 +591,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.emoji_btn.set_valign(Gtk.Align.END)
         self.emoji_btn.get_style_context().add_class("round")
         self.emoji_popover = EmojiPopover(self)
+        # Sélecteurs d'emoji (saisie et réactions) préparés en tâche de fond après le démarrage.
+        GLib.timeout_add_seconds(2, lambda: (self.emoji_popover.prebuild(), self._react_picker_widget().prebuild())
+                                 and False)
         self.emoji_btn.set_popover(self.emoji_popover)
         composer.pack_start(self.emoji_btn, False, False, 0)
         self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False)
@@ -590,9 +693,10 @@ class MainWindow(Gtk.ApplicationWindow):
         return f"Jamais joint — {ips}" if not c.vk else ips
 
     def refresh_sidebar(self):
+        """Met à jour la barre latérale. Seules les lignes dont le contenu a changé sont reconstruites
+        (elle est rafraîchie à chaque message, présence ou réaction)."""
         store = self.core.store
-        for row in self.sidebar.get_children():
-            self.sidebar.remove(row)
+        entries = []        # (clé, arguments de ConvRow) dans l'ordre d'affichage
         last = {}
 
         def last_msg(conv):
@@ -613,26 +717,22 @@ class MainWindow(Gtk.ApplicationWindow):
             badge += 0 if muted else unread
             m = last_msg(g.conv)
             n = len(store.group_member_ids(g.gid)) + 1
-            self.sidebar.add(ConvRow("group", g.conv, g.name, self._preview(m) if m else f"{n} membres",
-                                     when=_short_time(m.ts) if m else "", unread=unread,
-                                     image=self.core.avatar_path(g.conv), muted=muted))
+            entries.append(("group", g.conv, g.name, self._preview(m) if m else f"{n} membres",
+                            dict(when=_short_time(m.ts) if m else "", unread=unread,
+                                 image=self.core.avatar_path(g.conv), muted=muted)))
         for c in sorted(store.contacts(), key=lambda c: (-last_ts(c.conv), c.name.lower())):
             unread = store.unread_count(c.conv)
             total_unread += unread
             muted = bool(self.core.muted_until(c.conv))
             badge += 0 if muted else unread
             m = last_msg(c.conv)
-            self.sidebar.add(ConvRow("contact", c.conv, c.name, self._contact_subtitle(c, m),
-                                     when=_short_time(m.ts) if m else "", online=self.core.is_online(c.id),
-                                     unread=unread, warn=bool(c.pending_vk),
-                                     image=self.core.avatar_path(c.conv), muted=muted))
+            entries.append(("contact", c.conv, c.name, self._contact_subtitle(c, m),
+                            dict(when=_short_time(m.ts) if m else "", online=self.core.is_online(c.id),
+                                 unread=unread, warn=bool(c.pending_vk),
+                                 image=self.core.avatar_path(c.conv), muted=muted)))
         for vk, peer in sorted(self.core.discovered.items(), key=lambda kv: kv[1]["name"].lower()):
-            self.sidebar.add(ConvRow("peer", vk, peer["name"], ", ".join(peer["ips"]), online=True))
-        self.sidebar.show_all()
-
-        for row in self.sidebar.get_children():
-            if row.key == self.current:
-                self.sidebar.select_row(row)
+            entries.append(("peer", vk, peer["name"], ", ".join(peer["ips"]), dict(online=True)))
+        self._sync_sidebar(entries)
         accent = self.app.theme.palette["accent"]
         count = f" ({total_unread})" if total_unread else ""
         self.title_label.set_markup(f"<b><span foreground='{accent}'>Q</span>Chat{count}</b>")
@@ -641,6 +741,37 @@ class MainWindow(Gtk.ApplicationWindow):
         self.app.badge.set_count(badge)
         self._refresh_chat_header()
         self._schedule_mute_expiry()
+
+    def _sync_sidebar(self, entries):
+        old = self._side_rows
+        rows, reorder = {}, False
+        for order, (section, key, name, subtitle, kw) in enumerate(entries):
+            sig = (section, name, subtitle, tuple(sorted(kw.items())))
+            row = old.pop(key, None)
+            if row is not None and row.sig != sig:
+                row.destroy()
+                row = None
+            if row is None:
+                row = ConvRow(section, key, name, subtitle, **kw)
+                row.sig, row.order = sig, order
+                row.show_all()
+                self.sidebar.add(row)
+            elif row.order != order:
+                row.order = order
+                reorder = True
+            rows[key] = row
+        for row in old.values():
+            row.destroy()
+        self._side_rows = rows
+        if reorder:
+            self.sidebar.invalidate_sort()
+        self.sidebar.invalidate_headers()
+        current = rows.get(self.current)
+        if current is not None:
+            if self.sidebar.get_selected_row() is not current:
+                self.sidebar.select_row(current)
+        else:
+            self.sidebar.unselect_all()
 
     def _on_row_activated(self, _lb, row):
         if row.section == "peer":
@@ -692,6 +823,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._top = history[-PAGE] if len(history) >= PAGE else (history[0] if history else None)
         for m in history[-PAGE:]:
             self._append_message(m)
+        if self._older:     # aperçus de l'historique préparés d'avance, pour remonter sans à-coup
+            _warm_thumbnails(previews=self.core.store.image_paths(conv))
         self._stick_bottom = True
         self.core.mark_read(conv)
         self.app.notifier.withdraw(conv)
@@ -825,7 +958,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._older_pending = False
         if not self._older:
             return False
-        chunk, self._older = self._older[-PAGE:], self._older[:-PAGE]
+        chunk, self._older = self._older[-OLDER_STEP:], self._older[:-OLDER_STEP]
         first_shown = self._top
         self._top = chunk[0]
         adj = self.msg_scroll.get_vadjustment()
@@ -1030,57 +1163,71 @@ class MainWindow(Gtk.ApplicationWindow):
     def _with_reactions(self, m, bubble):
         """Bulle + pastilles de réactions + bouton 😊 visible au survol (ou clic droit)."""
         # Les pastilles chevauchent le bas de la bulle (côté gauche, l'heure restant visible à droite).
+        # Sans réaction, pas de superposition (créée à la première réaction, voir on_reaction).
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         bubble.set_halign(Gtk.Align.END if m.outgoing else Gtk.Align.START)
         column.pack_start(bubble, False, False, 0)
-        spacer = Gtk.Box()
-        spacer.set_no_show_all(True)
-        column.pack_start(spacer, False, False, 0)
-        reacts = Gtk.Box(spacing=3, halign=Gtk.Align.START, valign=Gtk.Align.END, margin_start=REACT_INSET)
-        reacts.set_no_show_all(True)
-        reacts.spacer = spacer
-        holder = Gtk.Overlay()
-        holder.add(column)
-        holder.add_overlay(reacts)
-        self._reaction_boxes[m.id] = reacts
         self._bubbles[m.id] = bubble
-        self._fill_reactions(m.id, reacts)
+        if self.core.store.reactions(m.id):
+            spacer = Gtk.Box()
+            spacer.set_no_show_all(True)
+            column.pack_start(spacer, False, False, 0)
+            reacts = Gtk.Box(spacing=3, halign=Gtk.Align.START, valign=Gtk.Align.END, margin_start=REACT_INSET)
+            reacts.set_no_show_all(True)
+            reacts.spacer = spacer
+            holder = Gtk.Overlay()
+            holder.add(column)
+            holder.add_overlay(reacts)
+            self._reaction_boxes[m.id] = reacts
+            self._fill_reactions(m.id, reacts)
+        else:
+            holder = column
+            self._reaction_boxes[m.id] = None
 
-        btn = Gtk.Button.new_from_icon_name("face-smile-symbolic", Gtk.IconSize.BUTTON)
-        btn.set_relief(Gtk.ReliefStyle.NONE)
-        btn.set_valign(Gtk.Align.CENTER)
-        btn.set_tooltip_text("Réagir")
-        btn.get_style_context().add_class("react-btn")
-        btn.set_opacity(0)
-        btn.connect("clicked", lambda b: self._react_popover(b, m.id))
-        reply = Gtk.Button.new_from_icon_name("mail-reply-sender-symbolic", Gtk.IconSize.BUTTON)
-        reply.set_relief(Gtk.ReliefStyle.NONE)
-        reply.set_tooltip_text("Répondre")
-        reply.get_style_context().add_class("react-btn")
-        reply.set_opacity(0)
-        reply.connect("clicked", lambda _b: self._start_reply(m.id))
-        more = Gtk.Button(relief=Gtk.ReliefStyle.NONE, tooltip_text="Plus d'options")
-        more.add(Gtk.Image.new_from_gicon(
-            Gio.ThemedIcon.new_with_default_fallbacks("view-more-horizontal-symbolic"), Gtk.IconSize.BUTTON))
-        more.get_style_context().add_class("react-btn")
-        more.set_opacity(0)
-        more.connect("clicked", lambda b: self._options_popover(b, m.id))
-        hover = [btn, reply, more]
-        # De la bulle vers l'extérieur : 😊, ↩, puis « … » au bout.
+        # Boutons du survol (😊, ↩, …) : construits au premier survol seulement. Ils apparaissent du
+        # côté extérieur, sans déplacer la bulle (alignée sur son bord).
         tools = Gtk.Box(valign=Gtk.Align.CENTER)
-        for b in (reversed(hover) if m.outgoing else hover):
-            tools.pack_start(b, False, False, 0)
+        tools.hover = None
+
+        def ensure_tools():
+            if tools.hover is None:
+                btn = Gtk.Button.new_from_icon_name("face-smile-symbolic", Gtk.IconSize.BUTTON)
+                btn.set_relief(Gtk.ReliefStyle.NONE)
+                btn.set_valign(Gtk.Align.CENTER)
+                btn.set_tooltip_text("Réagir")
+                btn.connect("clicked", lambda b: self._react_popover(b, m.id))
+                reply = Gtk.Button.new_from_icon_name("mail-reply-sender-symbolic", Gtk.IconSize.BUTTON)
+                reply.set_relief(Gtk.ReliefStyle.NONE)
+                reply.set_tooltip_text("Répondre")
+                reply.connect("clicked", lambda _b: self._start_reply(m.id))
+                more = Gtk.Button(relief=Gtk.ReliefStyle.NONE, tooltip_text="Plus d'options")
+                more.add(Gtk.Image.new_from_gicon(
+                    Gio.ThemedIcon.new_with_default_fallbacks("view-more-horizontal-symbolic"), Gtk.IconSize.BUTTON))
+                more.connect("clicked", lambda b: self._options_popover(b, m.id))
+                tools.hover = [btn, reply, more]
+                # De la bulle vers l'extérieur : 😊, ↩, puis « … » au bout.
+                for b in (reversed(tools.hover) if m.outgoing else tools.hover):
+                    b.get_style_context().add_class("react-btn")
+                    b.set_opacity(0)
+                    tools.pack_start(b, False, False, 0)
+                tools.show_all()
+            return tools.hover
+
         line = Gtk.Box(spacing=2)
         for child in ((tools, holder) if m.outgoing else (holder, tools)):
             line.pack_start(child, False, False, 0)
 
+        # Fenêtre d'entrée seulement (pas de surface propre) : la liste se réagence bien plus vite
+        # quand des messages plus anciens s'ajoutent en haut.
         ev = Gtk.EventBox()
         ev.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
         ev.add(line)
-        ev.connect("enter-notify-event", lambda *_a: [b.set_opacity(1) for b in hover])
+        ev.connect("enter-notify-event", lambda *_a: [b.set_opacity(1) for b in ensure_tools()])
         ev.connect("leave-notify-event", lambda _w, e: e.detail == Gdk.NotifyType.INFERIOR
-                   or [b.set_opacity(0) for b in hover])
-        ev.connect("button-press-event", lambda _w, e: e.button == 3 and self._options_popover(more, m.id))
+                   or [b.set_opacity(0) for b in tools.hover or ()])
+        ev.connect("button-press-event", lambda _w, e: e.button == 3
+                   and self._options_popover(ensure_tools()[2], m.id))
+        ev.tools = ensure_tools
         return ev
 
     def _emoji_art(self, emoji):
@@ -1105,6 +1252,22 @@ class MainWindow(Gtk.ApplicationWindow):
             return emoji
         known = self.core.custom_emoji(emoji)
         return f":{known[0]}:" if known else "avec un emoji"
+
+    def _animate_later(self, holder, path, size_fn):
+        """Décode l'animation de ``path`` hors de l'interface puis remplace l'image fixe de ``holder``."""
+        alive = [True]
+        holder.connect("destroy", lambda *_a: alive.__setitem__(0, False))
+
+        def done(anim):
+            if alive[0] and anim is not None:
+                old = holder.get_child()
+                if old is not None:
+                    holder.remove(old)
+                img = AnimatedImage(anim, size_fn)
+                holder.add(img)
+                img.show()
+            return False
+        _decoder().submit(lambda: GLib.idle_add(done, load_animation(path)))
 
     def _sticker_widget(self, token, name, path):
         """Emoji personnalisé envoyé seul : affiché en grand, animé s'il s'agit d'un GIF."""
@@ -1344,18 +1507,25 @@ class MainWindow(Gtk.ApplicationWindow):
         pop.popup()
         return True
 
-    def _react_picker(self, anchor, msg_id):
-        """Sélecteur complet pour réagir avec n'importe quel emoji."""
+    def _react_picker_widget(self):
         picker = self.__dict__.get("_react_popover_full")
         if picker is None:
             picker = EmojiPopover(self, on_pick=lambda e: self._react_target and self.core.react(
                 self._react_target, e), accept=valid_emoji)
             self._react_popover_full = picker
+        return picker
+
+    def _react_picker(self, anchor, msg_id):
+        """Sélecteur complet pour réagir avec n'importe quel emoji."""
+        picker = self._react_picker_widget()
         self._react_target = msg_id
         picker.set_relative_to(anchor)
         picker.popup()
 
     def on_reaction(self, msg_id, contact_id=None, emoji=None, on=False, incoming=False):
+        if msg_id in self._reaction_boxes and self._reaction_boxes[msg_id] is None \
+                and self.core.store.reactions(msg_id):
+            self._rerender(msg_id)      # première réaction : la bulle reçoit sa zone de pastilles
         box = self._reaction_boxes.get(msg_id)
         if box:
             self._fill_reactions(msg_id, box)
@@ -1539,11 +1709,10 @@ class MainWindow(Gtk.ApplicationWindow):
         thumb = self._thumbnail(att.path) if is_image and exists else None
         if thumb:
             ev = Gtk.EventBox(tooltip_text=f"{att.name} — cliquer pour agrandir")
-            anim = load_animation(att.path)
-            if anim:        # GIF animé : l'aperçu s'anime dans la discussion
-                ev.add(AnimatedImage(anim, lambda w, h: fit(w, h, 320, 240)))
-            else:
-                ev.add(Gtk.Image.new_from_pixbuf(thumb))
+            ev.add(Gtk.Image.new_from_surface(thumb))
+            if _maybe_animated(att.path):
+                # GIF animé : décodé en arrière-plan, l'aperçu fixe est remplacé une fois prêt.
+                self._animate_later(ev, att.path, lambda w, h: fit(w, h, 320, 240))
             ev.connect("button-press-event", lambda _w, e: e.button == 1 and self._view_file(m.id) or True)
             ev.connect("realize", lambda w: w.get_window().set_cursor(
                 Gdk.Cursor.new_from_name(w.get_display(), "pointer")))
@@ -1604,16 +1773,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._viewer.show_items(items, index)
 
     def _thumbnail(self, path):
-        cache = self.__dict__.setdefault("_thumbs", {})
-        if path not in cache:
-            cache[path] = None
-            try:
-                if os.path.getsize(path) <= 50 * 1024 * 1024:     # pas d'aperçu pour les images énormes
-                    pb = load_pixbuf(path, 320, 240)
-                    cache[path] = pb.apply_embedded_orientation() or pb
-            except (GLib.Error, OSError):
-                pass
-        return cache[path]
+        """Aperçu (surface cairo, 320 × 240 au plus) d'une image, depuis le cache disque si possible."""
+        return _thumbs().get(path, PREVIEW, lambda: _make_preview(path))
 
     def _error(self, text, secondary=None):
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
@@ -2636,7 +2797,7 @@ class EmojiPopover(Gtk.Popover):
 
     # -- construction (au premier affichage : ~1 900 emoji) -----------------------
     def _on_show(self):
-        if not self._built:
+        if not self._built or getattr(self, "_steps", None) is not None:
             self._build()
         self._fill_recent()
         self.search.set_text("")
@@ -2781,16 +2942,44 @@ class EmojiPopover(Gtk.Popover):
                       and False)
         return child
 
+    def prebuild(self):
+        """Construit la liste par petits morceaux pendant que l'application est inactive : la première
+        ouverture du sélecteur est alors immédiate (sinon ~250 ms pour ~1 900 emoji)."""
+        if self._built or getattr(self, "_steps", None) is not None:
+            return
+        self._steps = self._build_steps()
+
+        def step():
+            if self._steps is None:
+                return False
+            try:
+                next(self._steps)
+                return True
+            except StopIteration:
+                return False
+        GLib.idle_add(step, priority=GLib.PRIORITY_LOW)
+
     def _build(self):
+        if self._built and getattr(self, "_steps", None) is None:
+            return
+        if getattr(self, "_steps", None) is None:
+            self._steps = self._build_steps()
+        for _ in self._steps:       # termine d'un coup (ouverture avant la fin de la préparation)
+            pass
+
+    def _build_steps(self):
         self._built = True
         self.recent_flow = self._section("Récents", "🕓")
         flows = {}
         for group, icon, title in emojis.GROUPS:
             flows[group] = self._section(title, icon)
-        for e in emojis.load():
+        yield
+        for i, e in enumerate(emojis.load()):
             flow = flows.get(e.group)
             if flow is not None and self._renderable(e.char) and (not self.accept or self.accept(e.char)):
                 flow.add(self._cell(e))
+            if i % 120 == 119:
+                yield
         # Mes emojis personnalisés en fin de liste, avec leur onglet pour y sauter directement.
         self.custom_flow = self._section("Emojis personnalisés", "⭐", custom=True)
         self.custom_header = self._sections[-1][2]
@@ -2801,6 +2990,12 @@ class EmojiPopover(Gtk.Popover):
         self.list.show_all()
         self.tabs.show_all()
         self.refresh_custom()
+        yield
+        # Calcule aussi styles et tailles d'avance : la première ouverture n'a plus qu'à dessiner.
+        if self.get_relative_to() is None:
+            self.set_relative_to(self.win.input)
+        self.get_child().get_preferred_size()
+        self._steps = None
 
     def _renderable(self, char):
         """Écarte les emoji que la police du poste ne sait pas dessiner en un seul glyphe
@@ -3694,6 +3889,12 @@ class QChatApp(Gtk.Application):
         self.theme = None
         self.core = Core(home=self._home, port=self._port, discovery=self._discovery,
                          on_event=lambda name, data: GLib.idle_add(self._on_event, name, data))
+        global THUMBS
+        THUMBS = ThumbCache(os.path.join(self.core.home, "cache", "thumbs"), _decoder().submit)
+        threading.Thread(target=THUMBS.prune, daemon=True, name="qchat-prune").start()
+        # Photos rondes préparées pendant que la fenêtre se construit (premier lancement après mise à jour).
+        convs = [c.conv for c in self.core.store.contacts()] + [g.conv for g in self.core.store.groups()]
+        _warm_thumbnails(photos=[p for p in map(self.core.avatar_path, convs) if p], scale=_screen_scale())
         try:
             self._start_core()
         except OSError as e:

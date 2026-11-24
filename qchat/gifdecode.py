@@ -9,6 +9,7 @@ prend alors le relais : décompression LZW ici, composition des images par GdkPi
 import logging
 import os
 import struct
+import threading
 from collections import OrderedDict
 
 from gi.repository import GdkPixbuf, GLib
@@ -191,6 +192,7 @@ def animation(data):
 
 _warned = False
 _cache = OrderedDict()      # quelques fichiers récents : l'aperçu puis l'animation ne décodent qu'une fois
+_lock = threading.Lock()    # l'animation est décodée hors du fil de l'interface
 
 
 def fallback_used(error):
@@ -214,9 +216,10 @@ def load(path):
     try:
         st = os.stat(path)
         key = (path, st.st_mtime_ns, st.st_size)
-        if key in _cache:
-            _cache.move_to_end(key)
-            return _cache[key]
+        with _lock:
+            if key in _cache:
+                _cache.move_to_end(key)
+                return _cache[key]
         with open(path, "rb") as f:
             if not is_gif(f.read(6)):
                 return None, None
@@ -225,7 +228,8 @@ def load(path):
     except OSError:
         return None, None
     result = from_bytes(data)
-    _cache[key] = result
-    while len(_cache) > 4:
-        _cache.popitem(last=False)
+    with _lock:
+        _cache[key] = result
+        while len(_cache) > 4:
+            _cache.popitem(last=False)
     return result

@@ -1218,6 +1218,43 @@ class ReactFxTest(unittest.TestCase):
         self.assertTrue(core.valid_reaction("🔥"))
 
 
+class ThumbCacheTest(unittest.TestCase):
+    def test_disk_cache_roundtrip_and_failures(self):
+        import cairo
+        from qchat.thumbcache import ThumbCache
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "photo.bin")
+            with open(src, "wb") as f:
+                f.write(b"x")
+            calls = []
+
+            def make():
+                calls.append(1)
+                s = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 3)
+                cr = cairo.Context(s)
+                cr.set_source_rgb(1, 0, 0)
+                cr.paint()
+                return s
+            cache = ThumbCache(os.path.join(d, "thumbs"))
+            a = cache.get(src, "v", make)
+            self.assertEqual((a.get_width(), a.get_height(), len(calls)), (4, 3, 1))
+            self.assertIs(cache.get(src, "v", make), a)                       # mémoire
+            again = ThumbCache(os.path.join(d, "thumbs")).get(src, "v", make)  # disque (relance)
+            self.assertEqual((again.get_width(), len(calls)), (4, 1))
+            os.utime(src, ns=(1, 1))                                           # fichier modifié : recalcul
+            ThumbCache(os.path.join(d, "thumbs")).get(src, "v", make)
+            self.assertEqual(len(calls), 2)
+            bad = []
+            self.assertIsNone(cache.get(src, "illisible", lambda: bad.append(1)))
+            self.assertIsNone(cache.get(src, "illisible", lambda: bad.append(1)))
+            self.assertEqual(len(bad), 1)                                      # pas de nouvel essai
+            self.assertIsNone(cache.get(os.path.join(d, "absent"), "v", make))
+            cache.warm(src, "w", make)
+            self.assertEqual(len(calls), 3)
+            cache.warm(src, "w", make)                                         # déjà sur disque
+            self.assertEqual(len(calls), 3)
+
+
 class GifDecodeTest(unittest.TestCase):
     """Décodeur de secours quand gdk-pixbuf/glycin ne sait pas lire un GIF."""
 

@@ -526,6 +526,12 @@ class Store:
         rows = self._q("SELECT msg_id, name, size, mime, path FROM attachments WHERE msg_id=?", (msg_id,))
         return Attachment(*rows[0]) if rows else None
 
+    def image_paths(self, conv, limit=300):
+        """Images jointes à une conversation, des plus récentes aux plus anciennes."""
+        return [r[0] for r in self._q("SELECT a.path FROM attachments a JOIN messages m ON m.id = a.msg_id "
+                                      "WHERE m.conv=? AND a.mime LIKE 'image/%' AND m.deleted IS NULL "
+                                      "ORDER BY m.ts DESC LIMIT ?", (conv, limit))]
+
     def attachment_paths(self, conv):
         return [r[0] for r in self._q("SELECT a.path FROM attachments a JOIN messages m ON m.id = a.msg_id "
                                       "WHERE m.conv=?", (conv,))]

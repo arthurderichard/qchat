@@ -6,6 +6,18 @@ version, QChat affiche les sections de toutes les versions installées depuis la
 Format : un titre `## X.Y.Z — AAAA-MM-JJ` par version, puis une liste à puces. `**gras**` et
 `` `code` `` sont mis en forme dans la fenêtre « Nouveautés ».
 
+## 1.13.0 — 2026-11-24
+
+- **Plus fluide** : une nouvelle conversation, une présence ou une réaction ne font plus
+  reconstruire toute la liste des conversations (environ 40 fois plus rapide) ; les conversations
+  s'ouvrent environ 3 fois plus vite.
+- **Défilement sans à-coups** : les messages plus anciens arrivent par petits paquets, avant d'avoir
+  atteint le haut, et les aperçus d'images sont préparés à l'avance.
+- **GIF économes** : les GIF hors de l'écran se mettent en pause ; une conversation pleine de GIF ne
+  sollicite presque plus le processeur.
+- **Démarrage et photos** : photos de profil et aperçus sont gardés en cache sur le disque ; le
+  sélecteur d'emoji est préparé en arrière-plan et s'ouvre aussitôt.
+
 ## 1.12.1 — 2026-11-24
 
 - **Emojis personnalisés dans la liste** : ils sont rangés à la fin de la liste des emoji, sans volet

@@ -126,9 +126,15 @@ def load_pixbuf(path, max_w=None, max_h=None):
         return still
 
 
-class AnimatedImage(Gtk.Image):
+class AnimatedImage(Gtk.DrawingArea):
     """Image animée redimensionnée à la volée (Gtk.Image ne sait pas mettre une animation à l'échelle).
-    ``size_fn(largeur, hauteur)`` renvoie la taille d'affichage souhaitée."""
+    ``size_fn(largeur, hauteur)`` renvoie la taille d'affichage souhaitée.
+
+    Chaque image est dessinée directement (sans recalcul de mise en page), et l'animation se met en
+    pause tant qu'elle est hors de la partie visible de sa liste : une longue conversation pleine de
+    GIF ne consomme rien quand on ne les regarde pas."""
+
+    OFFSCREEN_CHECK = 400       # ms entre deux vérifications quand l'image n'est pas visible
 
     def __init__(self, anim, size_fn, transform=None):
         super().__init__()
@@ -138,34 +144,77 @@ class AnimatedImage(Gtk.Image):
             warnings.simplefilter("ignore", DeprecationWarning)
             self._iter = anim.get_iter(None)
         self._timer = None
+        self._frame = None              # image courante, déjà transformée si besoin
+        self._size = (1, 1)
+        self.connect("draw", self._on_draw)
         self.connect("map", lambda *_a: self._schedule())
         self.connect("unmap", lambda *_a: self._stop())
         self.connect("destroy", lambda *_a: self._stop())
         self.refresh()
 
     def refresh(self):
+        """Image courante et taille d'affichage (à rappeler quand la place disponible change)."""
         pb = self._iter.get_pixbuf()
         if self._transform:
-            self.set_from_pixbuf(self._transform(pb))
-            return
-        w, h = self._size_fn(pb.get_width(), pb.get_height())
-        if (w, h) != (pb.get_width(), pb.get_height()):
-            pb = pb.scale_simple(max(1, w), max(1, h), GdkPixbuf.InterpType.BILINEAR)
-        self.set_from_pixbuf(pb)
+            pb = self._transform(pb)
+            size = (pb.get_width(), pb.get_height())
+        else:
+            w, h = self._size_fn(pb.get_width(), pb.get_height())
+            size = (max(1, int(w)), max(1, int(h)))
+        self._frame = pb
+        if size != self._size:
+            self._size = size
+            self.set_size_request(*size)
+        self.queue_draw()
+
+    def _on_draw(self, _w, cr):
+        pb = self._frame
+        if pb is None:
+            return False
+        w, h = self._size
+        pw, ph = pb.get_width(), pb.get_height()
+        alloc = self.get_allocation()
+        cr.translate(max(0, (alloc.width - w) // 2), max(0, (alloc.height - h) // 2))
+        if (pw, ph) != (w, h):
+            cr.scale(w / pw, h / ph)
+        Gdk.cairo_set_source_pixbuf(cr, pb, 0, 0)
+        cr.get_source().set_filter(1)   # cairo.FILTER_GOOD
+        cr.paint()
+        return False
+
+    def _visible(self):
+        """Vrai si l'image recoupe la partie affichée de la liste qui la contient."""
+        parent = self.get_parent()
+        while parent is not None and not isinstance(parent, Gtk.ScrolledWindow):
+            parent = parent.get_parent()
+        if parent is None:
+            return True
+        alloc = self.get_allocation()
+        pos = self.translate_coordinates(parent, 0, 0)
+        if pos is None:
+            return False
+        area = parent.get_allocation()
+        return pos[1] + alloc.height > 0 and pos[1] < area.height and pos[0] + alloc.width > 0 and pos[0] < area.width
 
     def _stop(self):
         if self._timer:
             GLib.source_remove(self._timer)
             self._timer = None
 
-    def _schedule(self):
+    def _schedule(self, delay=None):
         self._stop()
-        delay = self._iter.get_delay_time()
-        if delay >= 0:
-            self._timer = GLib.timeout_add(max(delay, 20), self._tick)
+        if delay is None:
+            delay = self._iter.get_delay_time()
+            if delay < 0:
+                return
+            delay = max(delay, 20)
+        self._timer = GLib.timeout_add(delay, self._tick)
 
     def _tick(self):
         self._timer = None
+        if not self._visible():
+            self._schedule(self.OFFSCREEN_CHECK)
+            return False
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             self._iter.advance(None)
