@@ -6,6 +6,17 @@ version, QChat affiche les sections de toutes les versions installées depuis la
 Format : un titre `## X.Y.Z — AAAA-MM-JJ` par version, puis une liste à puces. `**gras**` et
 `` `code` `` sont mis en forme dans la fenêtre « Nouveautés ».
 
+## 1.12.0 — 2026-11-24
+
+- **Emojis personnalisés** : le sélecteur d'emoji a deux volets, *Emojis* et *Emojis personnalisés*.
+  **+** crée un emoji à partir de n'importe quelle image. Il sert de réaction, ou s'envoie seul, en
+  grand, depuis la zone de saisie. Vos correspondants le reçoivent automatiquement ; clic droit sur
+  leur réaction pour l'ajouter à vos emojis.
+- **Réactions animées** : l'emoji surgit sur le message en tournant légèrement, rebondit puis se
+  pose sur sa pastille, qui chevauche désormais le bas de la bulle.
+- **Survol des réactions** : la pastille rebondit et l'emoji s'affiche en grand avec les noms des
+  personnes qui ont réagi.
+
 ## 1.11.1 — 2026-11-24
 
 - **GIF toujours affichés** : sur certains postes, un GIF reçu apparaissait comme un simple fichier

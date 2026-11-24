@@ -317,6 +317,49 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self._reactions(self.a, msg.id) == [("👍", "Bob")]))
         self.assertEqual(self._reactions(self.b, msg.id), [("👍", "moi")])
 
+    def test_custom_emoji_reaction_and_sticker(self):
+        import base64
+        import hashlib
+        cid = self.add(self.a, self.b)
+        png = (b"\x89PNG\r\n\x1a\n" + b"\0" * 200)
+        token = self.b.core.add_custom_emoji(png, "Chat qui rit.png")
+        self.assertTrue(core.is_custom(token))
+        self.assertEqual(self.b.core.custom_emojis()[0][:2], (token, "chat_qui_rit"))
+        self.assertEqual(self.b.core.add_custom_emoji(b"\x89PNG\r\n\x1a\n" + b"\1" * 10, "chat qui rit")[:2], "c:")
+        self.assertEqual([n for _t, n, _p in self.b.core.custom_emojis()], ["chat_qui_rit", "chat_qui_rit_2"])
+        with self.assertRaises(ValueError):
+            self.b.core.add_custom_emoji(b"pas une image", "x")
+        msg = self.a.core.send_text(f"c:{cid}", "Regarde")
+        self.assertTrue(wait_for(lambda: self.b.core.store.get_message(msg.id) is not None))
+        self.b.core.react(msg.id, token)
+        self.assertTrue(wait_for(lambda: self._reactions(self.a, msg.id) == [(token, "Bob")]))
+        name, path, mine = self.a.core.custom_emoji(token)
+        self.assertEqual((name, mine), ("chat_qui_rit", False))
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), png)
+        self.assertEqual(self.a.core.custom_emojis(), [])          # reçu, pas dans mon sélecteur
+        self.a.core.keep_custom_emoji(token)
+        self.assertEqual([t for t, _n, _p in self.a.core.custom_emojis()], [token])
+        # Autocollant : « :nom: » pour les anciennes versions, image pour les nouvelles.
+        sticker = self.b.core.send_sticker(f"c:{self.b.contact(self.a).id}", token)
+        self.assertEqual((sticker.text, sticker.sticker), (":chat_qui_rit:", token))
+        self.assertTrue(wait_for(lambda: self.a.core.store.get_message(sticker.id) is not None))
+        self.assertEqual(self.a.core.store.get_message(sticker.id).sticker, token)
+        self.assertFalse(self.b.core.edit_text(sticker.id, "autre"))
+        # Image falsifiée (empreinte différente) : réaction refusée.
+        other = self.a.core.send_text(f"c:{cid}", "Encore")
+        self.assertTrue(wait_for(lambda: self.b.core.store.get_message(other.id) is not None))
+        fake = "c:" + hashlib.sha256(b"autre").hexdigest()
+        b_to_a = self.b.contact(self.a).id
+        self.b.core.store.enqueue(b_to_a, {"t": "react", "id": "r2", "ref": other.id, "emoji": fake, "on": True,
+                                           "cemoji": {"sha": fake[2:], "name": "faux",
+                                                      "data": base64.b64encode(png).decode()}})
+        self.b.core.request_flush([b_to_a])
+        time.sleep(1)
+        self.assertEqual(self._reactions(self.a, other.id), [])
+        self.b.core.remove_custom_emoji(token)
+        self.assertEqual(len(self.b.core.custom_emojis()), 1)
+
     def test_reactions_group_and_isolation(self):
         b_cid = self.add(self.a, self.b)
         c_cid = self.add(self.a, self.c)
@@ -1152,6 +1195,27 @@ def _tiny_gif(frames, palette=b"\xff\x00\x00\x00\x00\xff", w=2, h=2, transparent
         body = lzw(indices)
         data += bytes((len(body),)) + body + b"\0"
     return data + b"\x3b"
+
+
+class ReactFxTest(unittest.TestCase):
+    def test_curves_start_overshoot_and_settle(self):
+        from qchat import reactfx
+        self.assertAlmostEqual(reactfx.pop_curve(0)[0], 0.0)
+        peak = max(reactfx.pop_curve(i / 100)[0] for i in range(90))
+        self.assertGreater(peak, 1.1)                      # dépassement : effet rebond
+        self.assertEqual(reactfx.pop_curve(reactfx.POP_TIME), (1.0, 0.0))
+        self.assertAlmostEqual(reactfx.bump_curve(0)[0], 1.0)
+        self.assertGreater(max(reactfx.bump_curve(i / 100)[0] for i in range(80)), 1.3)
+        self.assertEqual(reactfx.bump_curve(reactfx.BUMP_TIME), (1.0, 0.0))
+        self.assertLess(abs(reactfx.pop_curve(0.85)[0] - 1), 0.02)
+
+    def test_emoji_names(self):
+        self.assertEqual(core.cemoji_name("Chat qui rit.PNG"), "chat_qui_rit")
+        self.assertEqual(core.cemoji_name("Éléphant  rose!"), "elephant_rose")
+        self.assertEqual(core.cemoji_name("😀"), "emoji")
+        self.assertTrue(core.valid_reaction("c:" + "a" * 64))
+        self.assertFalse(core.valid_reaction("c:" + "a" * 10))
+        self.assertTrue(core.valid_reaction("🔥"))
 
 
 class GifDecodeTest(unittest.TestCase):

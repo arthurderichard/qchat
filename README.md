@@ -189,8 +189,10 @@ sous…* / *Afficher dans le dossier* (fichiers), *Informations* et *Supprimer*,
 droit sur le message ouvre le même menu.
 
 **Réactions** : survolez un message et cliquez sur 😊, puis choisissez
-un emoji. Les réactions s'affichent sous le message ; cliquez sur une pastille pour ajouter ou retirer
-la vôtre, survolez-la pour voir qui a réagi. Vous êtes notifié quand quelqu'un réagit à vos messages.
+un emoji. L'emoji surgit sur le message (zoom, légère rotation, rebond) puis se pose sur sa pastille,
+qui chevauche le bas de la bulle. Cliquez sur une pastille pour ajouter ou retirer la vôtre ;
+survolez-la pour voir l'emoji en grand et qui a réagi. Vous êtes notifié quand quelqu'un réagit à vos
+messages.
 
 **Modifier un message** : **…** › *Modifier* sur l'un de vos messages (ou clic droit › *Modifier*,
 ou flèche ↑ dans une zone de saisie vide pour le dernier envoyé). Entrée enregistre, Échap annule.
@@ -242,6 +244,13 @@ choisir n'importe quel emoji. Un message composé uniquement d'emoji s'affiche e
 **Emoji** : le bouton 😊, à droite de *GIF*, ouvre la liste de tous les emoji, par catégorie, avec les
 emoji récents en tête. Tapez pour chercher en français (« cœur », « pouce », « fête »…), Entrée insère
 le premier résultat.
+
+**Emojis personnalisés** (depuis la 1.12.0) : volet *Emojis personnalisés* du sélecteur, **+** pour
+en créer un à partir d'une image (réduite à 128 px ; un GIF animé de moins de 48 Ko reste animé), puis
+donnez-lui un nom. Depuis la zone de saisie, un clic l'envoie seul, en grand ; depuis le 😊 d'un
+message, il sert de réaction. L'image voyage avec la réaction ou le message (vérifiée par son
+empreinte SHA-256), les versions antérieures affichent `:nom:`. Clic droit : *Renommer…* ou *Retirer*.
+Un emoji reçu s'ajoute aux vôtres par clic droit sur sa réaction, ou **…** › *Ajouter à mes emojis*.
 
 **Emoji au clavier** (depuis la 1.10.0), sans ouvrir le sélecteur :
 
@@ -329,6 +338,7 @@ python3 -m qchat --home /tmp/profilB --port 46002 --debug   # 2e profil sur le m
 | `qchat/session.py` | démarrage automatique (service systemd, entrée XDG)           |
 | `qchat/updater.py` | détection d'une version installée plus récente et redémarrage |
 | `qchat/viewer.py`  | visionneuse intégrée (images, GIF animés, PDF, texte)       |
+| `qchat/reactfx.py` | animations des réactions (apparition, envol, rebond au survol) |
 | `qchat/wizz.py`    | fenêtre animée des wizz / poke et son bzzz                  |
 
 ## Publier une version

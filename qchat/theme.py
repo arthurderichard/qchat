@@ -104,10 +104,14 @@ window.qchat { background-color: $bg; color: $fg; }
 .qchat .system { font-style: italic; }
 
 .qchat .reaction { background-image: none; background-color: $pill_bg; color: $pill_fg;
-                   border: 1px solid transparent; border-radius: 999px; padding: 0 7px;
-                   min-height: 0; box-shadow: none; }
-.qchat .reaction:hover { border-color: $accent; }
+                   border: 2px solid $chat_bg; border-radius: 999px; padding: 0 6px 0 1px;
+                   min-height: 0; min-width: 0; box-shadow: 0 1px 2px $shadow; }
+.qchat .reaction:hover { background-color: shade($pill_bg, 0.95); }
 .qchat .reaction.mine { background-color: $accent; color: #ffffff; }
+.qchat .reaction-count { font-size: smaller; font-weight: bold; }
+popover.reaction-peek { padding: 2px; }
+popover.reaction-peek .reaction-peek-name { font-weight: bold; }
+popover.reaction-peek .reaction-peek-who { font-size: smaller; opacity: 0.8; }
 .qchat .react-btn { padding: 2px; min-height: 0; min-width: 0; color: $muted; }
 modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .qchat .meta link { color: $muted; }
@@ -146,6 +150,9 @@ modelbutton.destructive, modelbutton.destructive label { color: #e01b24; }
 .emoji-popover flowboxchild:hover { background-color: alpha(#808080, 0.18); }
 .emoji-popover .emoji-section { font-weight: bold; font-size: smaller; opacity: 0.7; margin: 6px 4px 2px 4px; }
 .emoji-popover .emoji-tab { font-size: 17px; padding: 2px; min-height: 0; min-width: 0; }
+.emoji-popover .emoji-switcher button { padding: 3px 10px; min-height: 0; }
+.emoji-popover .custom-emoji-cell { min-width: 42px; min-height: 42px; }
+.emoji-popover .emoji-add { opacity: 0.7; }
 .emoji-popover .emoji-hint { font-size: smaller; opacity: 0.75; min-height: 18px; }
 .qchat .history-version { background-color: $in_bg; color: $in_fg; border-radius: 12px;
                           padding: 8px 12px; margin-bottom: 8px; }

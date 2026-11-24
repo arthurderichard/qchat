@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS attachments (
     mime TEXT NOT NULL,
     path TEXT NOT NULL              -- copie locale du fichier
 );
+CREATE TABLE IF NOT EXISTS custom_emojis (
+    sha TEXT PRIMARY KEY,           -- SHA-256 de l'image
+    name TEXT NOT NULL,             -- raccourci, sans les « : »
+    path TEXT NOT NULL,
+    mine INTEGER NOT NULL DEFAULT 0,    -- 1 : dans mon sélecteur ; 0 : seulement reçu
+    ts REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reactions (
     msg_id TEXT NOT NULL,
     reactor TEXT NOT NULL,          -- clé publique de la personne (la mienne incluse)
@@ -145,6 +152,7 @@ class Message:
     reply_to: str = None        # identifiant du message auquel celui-ci répond
     deleted: float = None       # date de suppression par son auteur, None sinon
     mentions: list = None       # clés publiques des personnes mentionnées (@Nom), groupes seulement
+    sticker: str = None         # emoji personnalisé (« c:<sha> ») si le message n'est que lui
 
     def __post_init__(self):
         if isinstance(self.mentions, str):
@@ -173,7 +181,8 @@ class Store:
 
     def _migrate(self):
         """Colonnes ajoutées après la création des premières bases."""
-        for table, columns in (("messages", (("reply_to", "TEXT"), ("deleted", "REAL"), ("mentions", "TEXT"))),
+        for table, columns in (("messages", (("reply_to", "TEXT"), ("deleted", "REAL"), ("mentions", "TEXT"),
+                                             ("sticker", "TEXT"))),
                                ("receipts", (("muted", "REAL"),))):
             cols = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
             for name, decl in columns:
@@ -337,20 +346,20 @@ class Store:
     # -- messages -----------------------------------------------------------
     _M = ("SELECT id, conv, sender_id, kind, text, ts, status, "
           "(SELECT MAX(e.ts) FROM message_edits e WHERE e.msg_id = messages.id), reply_to, deleted, "
-          "mentions FROM messages")
+          "mentions, sticker FROM messages")
 
     def add_message(self, msg_id, conv, sender_id, text, ts, status, kind="text", unread=False,
-                    reply_to=None, mentions=None):
+                    reply_to=None, mentions=None, sticker=None):
         """Insère un message ; renvoie None si déjà connu (doublon)."""
         try:
             self._x("INSERT INTO messages (id, conv, sender_id, kind, text, ts, status, unread, reply_to, "
-                    "mentions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "mentions, sticker) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (msg_id, conv, sender_id, kind, text, ts, status, int(unread), reply_to,
-                     json.dumps(mentions) if mentions else None))
+                     json.dumps(mentions) if mentions else None, sticker))
         except sqlite3.IntegrityError:
             return None
         return Message(msg_id, conv, sender_id, kind, text, ts, status, reply_to=reply_to,
-                       mentions=list(mentions or []))
+                       mentions=list(mentions or []), sticker=sticker)
 
     def delete_message(self, msg_id, ts):
         """Supprime le contenu d'un message (texte, versions, réactions, pièce jointe) en gardant sa
@@ -456,6 +465,38 @@ class Store:
         dates = [m.ts] + [ts for _t, ts in rows]
         texts = [t for t, _ts in rows] + [m.text]
         return list(zip(texts, dates))
+
+    # -- emojis personnalisés ----------------------------------------------------
+    def add_custom_emoji(self, sha, name, path, mine, ts=None):
+        """Enregistre un emoji (déjà connu : garde son image, devient « à moi » si ``mine``)."""
+        with self._lock:
+            known = self.custom_emoji(sha)
+            if known:
+                if mine and not known[3]:
+                    self._x("UPDATE custom_emojis SET mine=1, name=?, ts=? WHERE sha=?",
+                            (name, ts or time.time(), sha))
+                return False
+            self._x("INSERT INTO custom_emojis VALUES (?, ?, ?, ?, ?)",
+                    (sha, name, path, int(bool(mine)), ts or time.time()))
+            return True
+
+    def custom_emoji(self, sha):
+        """(sha, nom, chemin, à moi) ou None."""
+        rows = self._q("SELECT sha, name, path, mine FROM custom_emojis WHERE sha=?", (sha,))
+        return tuple(rows[0]) if rows else None
+
+    def custom_emojis(self):
+        """Mes emojis personnalisés, du plus ancien au plus récent : [(sha, nom, chemin)]."""
+        return [tuple(r) for r in self._q("SELECT sha, name, path FROM custom_emojis WHERE mine=1 ORDER BY ts")]
+
+    def set_custom_emoji_mine(self, sha, mine):
+        self._x("UPDATE custom_emojis SET mine=? WHERE sha=?", (int(bool(mine)), sha))
+
+    def set_custom_emoji_path(self, sha, path):
+        self._x("UPDATE custom_emojis SET path=? WHERE sha=?", (path, sha))
+
+    def rename_custom_emoji(self, sha, name):
+        self._x("UPDATE custom_emojis SET name=? WHERE sha=?", (name, sha))
 
     # -- réactions ---------------------------------------------------------------
     def set_reaction(self, msg_id, reactor, emoji, on):

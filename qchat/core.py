@@ -37,6 +37,7 @@ DISCOVERY_PORT = 45454
 ANNOUNCE_INTERVAL = 30
 RETRY_INTERVAL = 20
 ONLINE_TIMEOUT = 75
+MAX_CEMOJI = 48 * 1024          # image d'un emoji personnalisé (réduite à 128 px par l'interface)
 MAX_AVATAR = 64 * 1024          # photo de profil ou de groupe (déjà réduite par l'interface)
 AVATAR_RETRY = 300              # délai avant de redemander une photo à un contact
 MAX_MUTE = 24 * 3600            # durée maximale d'une sourdine annoncée
@@ -175,6 +176,29 @@ def valid_emoji(emoji):
             and all(ord(ch) >= 0x2000 and ch.isprintable() or ch in "\u200d\ufe0f" for ch in emoji))
 
 
+CUSTOM_PREFIX = "c:"
+_CUSTOM = re.compile(r"c:[0-9a-f]{64}")
+_CEMOJI_NAME = re.compile(r"[a-z0-9_]{2,32}")
+
+
+def is_custom(emoji):
+    """Emoji personnalisé : « c: » suivi de l'empreinte SHA-256 de son image."""
+    return isinstance(emoji, str) and _CUSTOM.fullmatch(emoji) is not None
+
+
+def valid_reaction(emoji):
+    return valid_emoji(emoji) or is_custom(emoji)
+
+
+def cemoji_name(text):
+    """Raccourci d'emoji personnalisé tiré d'un texte libre (« Chat qui rit.png » → chat_qui_rit)."""
+    import unicodedata
+    text = re.sub(r"\.(png|jpe?g|gif|webp|bmp|svg)$", "", (text or "").strip(), flags=re.I)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    name = re.sub(r"[^a-z0-9]+", "_", text).strip("_")[:32].strip("_")
+    return name if len(name) >= 2 else "emoji"
+
+
 def detect_file(path, name):
     """Renvoie (nom, type MIME). Si l'extension ne dit rien, le type est déduit du contenu
     et l'extension correspondante est ajoutée au nom."""
@@ -266,6 +290,8 @@ class Core:
         os.makedirs(self.files_dir, mode=0o700, exist_ok=True)
         self.avatars_dir = os.path.join(self.home, "avatars")
         os.makedirs(self.avatars_dir, mode=0o700, exist_ok=True)
+        self.emojis_dir = os.path.join(self.home, "emojis")
+        os.makedirs(self.emojis_dir, mode=0o700, exist_ok=True)
         self._avatar_asked = {}   # contact_id -> (sha demandé, date)
         self._wizz_sent = 0.0     # date de mon dernier wizz/poke, toutes conversations confondues
         self._wizz_seen = {}      # contact_id -> date du dernier wizz affiché
@@ -657,7 +683,7 @@ class Core:
             return self.store.group_member_ids(ident)
         return [int(ident)]
 
-    def send_text(self, conv, text, reply_to=None):
+    def send_text(self, conv, text, reply_to=None, _sticker=None):
         """Envoie un message texte ; ``reply_to`` : identifiant du message auquel il répond."""
         text = text.strip()[:MAX_TEXT]
         if not text:
@@ -665,6 +691,8 @@ class Core:
         msg_id = uuid.uuid4().hex
         ts = time.time()
         payload = {"t": "msg", "id": msg_id, "ts": ts, "text": text}
+        if _sticker:
+            payload["cemoji"] = _sticker[1]
         mentions = []
         if conv.startswith("g:"):
             people = [(c.vk, c.name) for c in (self.store.get_contact(i)
@@ -680,7 +708,7 @@ class Core:
         targets = self._targets(conv, payload)
         msg = self.store.add_message(msg_id, conv, None, text, ts,
                                      "pending" if targets else "delivered", reply_to=reply_to,
-                                     mentions=mentions)
+                                     mentions=mentions, sticker=_sticker[0] if _sticker else None)
         self.store.add_recipients(msg_id, targets)
         for cid in targets:
             self.store.enqueue(cid, payload, msg_id)
@@ -725,15 +753,127 @@ class Core:
         self.request_flush(targets)
         return msg
 
+    # -- emojis personnalisés ---------------------------------------------------
+    def _store_cemoji(self, data, name, mine):
+        """Image d'emoji (déjà validée) enregistrée ; renvoie son jeton « c:<sha> »."""
+        sha = hashlib.sha256(data).hexdigest()
+        known = self.store.custom_emoji(sha)
+        path = known[2] if known and os.path.isfile(known[2]) else None
+        if path is None:
+            ext = {"image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(_sniff_bytes(data), ".jpg")
+            path = os.path.join(self.emojis_dir, sha[:32] + ext)
+            tmp = path + ".part"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+            if known:
+                self.store.set_custom_emoji_path(sha, path)
+        self.store.add_custom_emoji(sha, name, path, mine)
+        return CUSTOM_PREFIX + sha
+
+    def _unique_cemoji_name(self, name, sha=None):
+        taken = {n for s, n, _p in self.store.custom_emojis() if s != sha}
+        base, i = name, 2
+        while name in taken:
+            suffix = f"_{i}"
+            name = base[:32 - len(suffix)] + suffix
+            i += 1
+        return name
+
+    def add_custom_emoji(self, data, name):
+        """Ajoute un emoji personnalisé à mon sélecteur (bytes d'une image PNG/GIF…, déjà réduite).
+        Renvoie son jeton ; ValueError si l'image ne convient pas."""
+        if not (isinstance(data, bytes) and 0 < len(data) <= MAX_CEMOJI and _sniff_bytes(data)):
+            raise ValueError("Image trop lourde ou dans un format inconnu.")
+        sha = hashlib.sha256(data).hexdigest()
+        name = self._unique_cemoji_name(cemoji_name(name), sha)
+        token = self._store_cemoji(data, name, True)
+        self.store.rename_custom_emoji(sha, name)
+        self._emit("custom_emojis_changed")
+        return token
+
+    def remove_custom_emoji(self, token):
+        """Retire l'emoji de mon sélecteur (il reste affiché là où il a déjà servi)."""
+        if is_custom(token):
+            self.store.set_custom_emoji_mine(token[2:], False)
+            self._emit("custom_emojis_changed")
+
+    def rename_custom_emoji(self, token, name):
+        if is_custom(token) and self.store.custom_emoji(token[2:]):
+            self.store.rename_custom_emoji(token[2:], self._unique_cemoji_name(cemoji_name(name), token[2:]))
+            self._emit("custom_emojis_changed")
+
+    def keep_custom_emoji(self, token):
+        """Ajoute à mon sélecteur un emoji reçu d'un correspondant."""
+        known = self.store.custom_emoji(token[2:]) if is_custom(token) else None
+        if known and not known[3]:
+            self.store.add_custom_emoji(known[0], self._unique_cemoji_name(known[1], known[0]), known[2], True)
+            self._emit("custom_emojis_changed")
+
+    def custom_emojis(self):
+        """Mes emojis personnalisés : [(jeton, nom, chemin)]."""
+        return [(CUSTOM_PREFIX + sha, name, path) for sha, name, path in self.store.custom_emojis()
+                if os.path.isfile(path)]
+
+    def custom_emoji(self, token):
+        """(nom, chemin, à moi) d'un emoji personnalisé connu, ou None."""
+        known = self.store.custom_emoji(token[2:]) if is_custom(token) else None
+        if known and os.path.isfile(known[2]):
+            return known[1], known[2], bool(known[3])
+        return None
+
+    def _cemoji_card(self, token):
+        known = self.custom_emoji(token)
+        if not known:
+            return None
+        try:
+            with open(known[1], "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        return {"sha": token[2:], "name": known[0], "data": base64.b64encode(data).decode()}
+
+    def _accept_cemoji(self, card):
+        """Emoji personnalisé joint par un correspondant : jeton s'il est valide, sinon None."""
+        if not isinstance(card, dict):
+            return None
+        sha, name, data = card.get("sha"), card.get("name"), card.get("data")
+        if not (isinstance(sha, str) and _HEX64.fullmatch(sha) and isinstance(name, str)
+                and _CEMOJI_NAME.fullmatch(name)):
+            return None
+        if self.custom_emoji(CUSTOM_PREFIX + sha):
+            return CUSTOM_PREFIX + sha
+        if not (isinstance(data, str) and len(data) <= MAX_CEMOJI * 4 // 3 + 4):
+            return None
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (ValueError, TypeError):
+            return None
+        if not (0 < len(raw) <= MAX_CEMOJI and _sniff_bytes(raw) and hashlib.sha256(raw).hexdigest() == sha):
+            return None
+        return self._store_cemoji(raw, name, False)
+
+    def send_sticker(self, conv, token, reply_to=None):
+        """Envoie un emoji personnalisé seul, affiché en grand (« :nom: » pour les anciennes versions)."""
+        card = self._cemoji_card(token)
+        if card is None:
+            return None
+        return self.send_text(conv, f":{card['name']}:", reply_to=reply_to, _sticker=(token, card))
+
     def react(self, msg_id, emoji):
         """Ajoute ma réaction ``emoji`` à un message, ou la retire si elle y est déjà."""
         m = self.store.get_message(msg_id)
-        if not m or m.kind == "system" or m.deleted is not None or not valid_emoji(emoji):
+        if not m or m.kind == "system" or m.deleted is not None or not valid_reaction(emoji):
             return
         me = self.identity.vk_hex
         on = not self.store.has_reaction(msg_id, me, emoji)
+        card = self._cemoji_card(emoji) if is_custom(emoji) else None
+        if is_custom(emoji) and on and card is None:
+            return
         self.store.set_reaction(msg_id, me, emoji, on)
         payload = {"t": "react", "id": uuid.uuid4().hex, "ref": msg_id, "emoji": emoji, "on": on}
+        if card and on:
+            payload["cemoji"] = card
         targets = self._targets(m.conv, payload)
         for cid in targets:
             self.store.enqueue(cid, payload)
@@ -745,7 +885,7 @@ class Core:
         m = self.store.get_message(msg_id)
         text = text.strip()[:MAX_TEXT]
         if (not m or not m.outgoing or m.kind != "text" or m.deleted is not None or not text
-                or text == m.text):
+                or text == m.text or m.sticker):
             return False
         ts = max(time.time(), (m.edited or m.ts) + 0.001)
         self.store.edit_message(msg_id, text, ts)
@@ -1263,8 +1403,12 @@ class Core:
         if not (isinstance(mentions, list) and len(mentions) <= 64):
             mentions = []
         mentions = [v for v in mentions if isinstance(v, str) and _HEX64.fullmatch(v)]
+        sticker = None
+        card = obj.get("cemoji")
+        if isinstance(card, dict) and text == f":{card.get('name')}:":
+            sticker = self._accept_cemoji(card)
         msg = self.store.add_message(msg_id, conv, cid, text[:MAX_TEXT], ts, "received", unread=True,
-                                     reply_to=reply, mentions=mentions)
+                                     reply_to=reply, mentions=mentions, sticker=sticker)
         if msg:
             self._emit("message", message=msg, incoming=True)
 
@@ -1356,9 +1500,11 @@ class Core:
 
     def _on_react(self, cid, obj):
         ref, emoji, on = obj.get("ref"), obj.get("emoji"), obj.get("on")
-        if not (isinstance(ref, str) and _MSG_ID.fullmatch(ref) and valid_emoji(emoji)
+        if not (isinstance(ref, str) and _MSG_ID.fullmatch(ref) and valid_reaction(emoji)
                 and isinstance(on, bool)):
             return
+        if is_custom(emoji) and on and self._accept_cemoji(obj.get("cemoji")) != emoji:
+            return      # emoji personnalisé sans image valide
         gid = obj.get("gid")
         if gid is not None:
             if not isinstance(gid, str) or cid not in self.store.group_member_ids(gid):
@@ -1383,7 +1529,7 @@ class Core:
         conv = f"g:{gid}" if gid is not None else f"c:{cid}"
         m = self.store.get_message(ref)
         # Seul l'auteur peut modifier, dans la conversation d'origine, un message texte.
-        if not text or not m or m.conv != conv or m.sender_id != cid or m.kind != "text":
+        if not text or not m or m.conv != conv or m.sender_id != cid or m.kind != "text" or m.sticker:
             return
         if self.store.edit_message(ref, text, min(ts, time.time() + 60)):
             self._emit("edited", msg_id=ref, incoming=True)
