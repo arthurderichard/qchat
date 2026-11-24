@@ -1197,6 +1197,13 @@ def _tiny_gif(frames, palette=b"\xff\x00\x00\x00\x00\xff", w=2, h=2, transparent
     return data + b"\x3b"
 
 
+def _has_display():
+    import gi
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk
+    return Gdk.Display.get_default() is not None
+
+
 class ReactFxTest(unittest.TestCase):
     def test_curves_start_overshoot_and_settle(self):
         from qchat import reactfx
@@ -1209,6 +1216,7 @@ class ReactFxTest(unittest.TestCase):
         self.assertEqual(reactfx.bump_curve(reactfx.BUMP_TIME), (1.0, 0.0))
         self.assertLess(abs(reactfx.pop_curve(0.85)[0] - 1), 0.02)
 
+    @unittest.skipUnless(_has_display(), "pas d'affichage (CI) : GTK ne peut pas créer de widget")
     def test_sprite_animates_only_on_demand(self):
         from gi.repository import GdkPixbuf, GLib
         from qchat import reactfx
